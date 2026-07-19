@@ -1,0 +1,39 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: wallet_test
+          POSTGRES_USER: wallet
+          POSTGRES_PASSWORD: wallet
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U wallet -d wallet_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgres://wallet:wallet@localhost:5432/wallet_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache: true
+      - run: go mod download
+      - run: gofmt -w . && git diff --exit-code
+      - run: go vet ./...
+      - run: go test -race -coverprofile=coverage.out ./...
+      - run: go build ./cmd/server ./cmd/migrate

@@ -1,0 +1,274 @@
+openapi: 3.1.0
+info:
+  title: Wallet Service API
+  version: 1.0.0
+  description: Atomic and idempotent wallet operations.
+servers:
+  - url: http://localhost:8080
+paths:
+  /health/live:
+    get:
+      operationId: liveness
+      responses:
+        "200": { description: Process is alive }
+  /health/ready:
+    get:
+      operationId: readiness
+      responses:
+        "200": { description: Service is ready }
+        "503": { $ref: "#/components/responses/Problem" }
+  /v1/wallets:
+    post:
+      operationId: createWallet
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/ClientID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [currency]
+              properties:
+                currency: { $ref: "#/components/schemas/Currency" }
+      responses:
+        "201":
+          description: Wallet created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Wallet" }
+        "200":
+          description: Idempotent replay
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Wallet" }
+        "400": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+        "422": { $ref: "#/components/responses/Problem" }
+  /v1/wallets/{walletId}:
+    parameters:
+      - $ref: "#/components/parameters/WalletID"
+    get:
+      operationId: getWallet
+      responses:
+        "200":
+          description: Wallet
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Wallet" }
+        "400": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+  /v1/wallets/{walletId}/deposits:
+    parameters:
+      - $ref: "#/components/parameters/WalletID"
+    post:
+      operationId: deposit
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/ClientID"
+      requestBody: { $ref: "#/components/requestBodies/Money" }
+      responses:
+        "201": { $ref: "#/components/responses/OperationCreated" }
+        "200": { $ref: "#/components/responses/Operation" }
+        "400": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+        "422": { $ref: "#/components/responses/Problem" }
+  /v1/wallets/{walletId}/withdrawals:
+    parameters:
+      - $ref: "#/components/parameters/WalletID"
+    post:
+      operationId: withdraw
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/ClientID"
+      requestBody: { $ref: "#/components/requestBodies/Money" }
+      responses:
+        "201": { $ref: "#/components/responses/OperationCreated" }
+        "200": { $ref: "#/components/responses/Operation" }
+        "400": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+        "422": { $ref: "#/components/responses/Problem" }
+  /v1/wallets/{walletId}/transactions:
+    parameters:
+      - $ref: "#/components/parameters/WalletID"
+    get:
+      operationId: listWalletTransactions
+      parameters:
+        - name: cursor
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+        - name: type
+          in: query
+          schema: { $ref: "#/components/schemas/TransactionType" }
+      responses:
+        "200":
+          description: Transaction history
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/HistoryItem" }
+                  nextCursor: { type: string }
+        "400": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+  /v1/transfers:
+    post:
+      operationId: transfer
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/ClientID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [sourceWalletId, destinationWalletId, amount, currency]
+              properties:
+                sourceWalletId: { type: string, format: uuid }
+                destinationWalletId: { type: string, format: uuid }
+                amount: { $ref: "#/components/schemas/Amount" }
+                currency: { $ref: "#/components/schemas/Currency" }
+      responses:
+        "201": { $ref: "#/components/responses/OperationCreated" }
+        "200": { $ref: "#/components/responses/Operation" }
+        "400": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+        "422": { $ref: "#/components/responses/Problem" }
+  /v1/transactions/{transactionId}:
+    get:
+      operationId: getTransaction
+      parameters:
+        - name: transactionId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200": { $ref: "#/components/responses/Operation" }
+        "400": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+components:
+  parameters:
+    WalletID:
+      name: walletId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: { type: string, minLength: 1, maxLength: 128 }
+    ClientID:
+      name: X-Client-ID
+      in: header
+      required: false
+      description: Demo idempotency namespace; production deployments derive this from authentication.
+      schema: { type: string, maxLength: 128 }
+  requestBodies:
+    Money:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: false
+            required: [amount, currency]
+            properties:
+              amount: { $ref: "#/components/schemas/Amount" }
+              currency: { $ref: "#/components/schemas/Currency" }
+  responses:
+    OperationCreated:
+      description: Operation committed
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Operation" }
+    Operation:
+      description: Financial operation
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Operation" }
+    Problem:
+      description: Structured error
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+  schemas:
+    Amount:
+      type: string
+      pattern: "^[0-9]+(\\.[0-9]+)?$"
+      examples: ["25.50"]
+    Currency:
+      type: string
+      enum: [USD, EUR, GBP, JPY]
+    TransactionType:
+      type: string
+      enum: [DEPOSIT, WITHDRAWAL, TRANSFER]
+    Wallet:
+      type: object
+      required: [id, currency, balance, status, version, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        currency: { $ref: "#/components/schemas/Currency" }
+        balance: { type: string }
+        status: { type: string, enum: [ACTIVE, FROZEN, CLOSED] }
+        version: { type: integer }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    LedgerEffect:
+      type: object
+      required: [walletId, direction, balanceAfter]
+      properties:
+        walletId: { type: string, format: uuid }
+        direction: { type: string, enum: [DEBIT, CREDIT] }
+        balanceAfter: { type: string }
+    Operation:
+      type: object
+      required: [id, type, amount, currency, entries, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        type: { $ref: "#/components/schemas/TransactionType" }
+        amount: { type: string }
+        currency: { $ref: "#/components/schemas/Currency" }
+        sourceWalletId: { type: string, format: uuid }
+        destinationWalletId: { type: string, format: uuid }
+        entries:
+          type: array
+          items: { $ref: "#/components/schemas/LedgerEffect" }
+        createdAt: { type: string, format: date-time }
+    HistoryItem:
+      type: object
+      required: [id, type, direction, amount, currency, balanceAfter, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        type: { $ref: "#/components/schemas/TransactionType" }
+        direction: { type: string, enum: [DEBIT, CREDIT] }
+        amount: { type: string }
+        currency: { $ref: "#/components/schemas/Currency" }
+        balanceAfter: { type: string }
+        counterpartyWalletId: { type: string, format: uuid }
+        createdAt: { type: string, format: date-time }
+    Problem:
+      type: object
+      required: [type, title, status, code, detail, instance]
+      properties:
+        type: { type: string, format: uri }
+        title: { type: string }
+        status: { type: integer }
+        code: { type: string }
+        detail: { type: string }
+        instance: { type: string }
+        requestId: { type: string }
