@@ -65,3 +65,39 @@ func TestFormatMinor(t *testing.T) {
 		t.Fatalf("expected 12.00, got %s", got)
 	}
 }
+
+func TestNewMoneyValidation(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		minor    int64
+		currency string
+		want     domain.Money
+		wantErr  error
+	}{
+		{name: "normalizes currency", minor: 1, currency: " usd ", want: domain.Money{Minor: 1, Currency: "USD"}},
+		{name: "zero", minor: 0, currency: "USD", wantErr: domain.ErrInvalidAmount},
+		{name: "negative", minor: -1, currency: "USD", wantErr: domain.ErrInvalidAmount},
+		{name: "unsupported currency", minor: 1, currency: "CAD", wantErr: domain.ErrInvalidCurrency},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			money, err := domain.NewMoney(test.minor, test.currency)
+			if !errors.Is(err, test.wantErr) {
+				t.Fatalf("expected error %v, got %v", test.wantErr, err)
+			}
+			if test.wantErr == nil && money != test.want {
+				t.Fatalf("expected %+v, got %+v", test.want, money)
+			}
+		})
+	}
+}
+
+func TestParseMoneyRejectsOutOfRangeValue(t *testing.T) {
+	t.Parallel()
+	_, err := domain.ParseMoney("999999999999999999999999999.99", "USD")
+	if !errors.Is(err, domain.ErrAmountOverflow) {
+		t.Fatalf("expected overflow, got %v", err)
+	}
+}

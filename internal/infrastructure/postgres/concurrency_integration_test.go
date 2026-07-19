@@ -28,7 +28,7 @@ func TestConcurrentWithdrawalsPreserveBalanceInvariant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	t.Cleanup(store.Close)
 	if err := postgres.Migrate(ctx, store.Pool()); err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +104,7 @@ func TestConcurrentOpposingTransfersPreserveTotalMoney(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	t.Cleanup(store.Close)
 	if err := postgres.Migrate(ctx, store.Pool()); err != nil {
 		t.Fatal(err)
 	}

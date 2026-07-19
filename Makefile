@@ -4,7 +4,7 @@ test:
 	go test ./...
 
 integration-test:
-	go test ./internal/infrastructure/postgres -run TestConcurrent -count=1
+	go test ./internal/infrastructure/postgres -count=1
 
 vet:
 	go vet ./...

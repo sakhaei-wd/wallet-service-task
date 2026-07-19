@@ -23,11 +23,22 @@ const maxRequestBodyBytes = 1 << 20
 var errUnsupportedMediaType = errors.New("Content-Type must be application/json")
 
 type Handler struct {
-	service *application.Service
+	service walletService
 	logger  *slog.Logger
 }
 
-func NewHandler(service *application.Service, logger *slog.Logger) *Handler {
+type walletService interface {
+	CreateWallet(ctx context.Context, command application.CreateWalletCommand) (domain.Wallet, bool, error)
+	GetWallet(ctx context.Context, walletID string) (domain.Wallet, error)
+	Deposit(ctx context.Context, command application.MoneyCommand) (domain.OperationResult, error)
+	Withdraw(ctx context.Context, command application.MoneyCommand) (domain.OperationResult, error)
+	Transfer(ctx context.Context, command application.TransferCommand) (domain.OperationResult, error)
+	GetTransaction(ctx context.Context, transactionID string) (domain.OperationResult, error)
+	ListHistory(ctx context.Context, walletID string, cursor int64, limit int, transactionType *domain.TransactionType) (domain.HistoryPage, error)
+	Ping(ctx context.Context) error
+}
+
+func NewHandler(service walletService, logger *slog.Logger) *Handler {
 	return &Handler{service: service, logger: logger}
 }
 
