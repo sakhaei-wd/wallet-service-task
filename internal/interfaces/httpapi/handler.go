@@ -29,12 +29,12 @@ type Handler struct {
 
 type walletService interface {
 	CreateWallet(ctx context.Context, command application.CreateWalletCommand) (domain.Wallet, bool, error)
-	GetWallet(ctx context.Context, walletID string) (domain.Wallet, error)
+	GetWallet(ctx context.Context, ownerID, walletID string) (domain.Wallet, error)
 	Deposit(ctx context.Context, command application.MoneyCommand) (domain.OperationResult, error)
 	Withdraw(ctx context.Context, command application.MoneyCommand) (domain.OperationResult, error)
 	Transfer(ctx context.Context, command application.TransferCommand) (domain.OperationResult, error)
-	GetTransaction(ctx context.Context, transactionID string) (domain.OperationResult, error)
-	ListHistory(ctx context.Context, walletID string, cursor int64, limit int, transactionType *domain.TransactionType) (domain.HistoryPage, error)
+	GetTransaction(ctx context.Context, ownerID, transactionID string) (domain.OperationResult, error)
+	ListHistory(ctx context.Context, ownerID, walletID string, cursor int64, limit int, transactionType *domain.TransactionType) (domain.HistoryPage, error)
 	Ping(ctx context.Context) error
 }
 
@@ -72,13 +72,18 @@ func (h *Handler) createWallet(writer http.ResponseWriter, request *http.Request
 		writeDecodeProblem(writer, request, err)
 		return
 	}
+	ownerID, err := ownerIDFromRequest(request)
+	if err != nil {
+		writeProblem(writer, validationProblem(request, err.Error()))
+		return
+	}
 	idempotency, err := idempotencyFromRequest(request)
 	if err != nil {
 		writeProblem(writer, validationProblem(request, err.Error()))
 		return
 	}
 	wallet, replayed, err := h.service.CreateWallet(request.Context(), application.CreateWalletCommand{
-		Currency: body.Currency, Idempotency: idempotency,
+		OwnerID: ownerID, Currency: body.Currency, Idempotency: idempotency,
 	})
 	if err != nil {
 		h.writeServiceError(writer, request, err)
@@ -98,7 +103,12 @@ func (h *Handler) getWallet(writer http.ResponseWriter, request *http.Request) {
 		writeProblem(writer, validationProblem(request, "walletId must be a valid UUID"))
 		return
 	}
-	wallet, err := h.service.GetWallet(request.Context(), walletID)
+	ownerID, err := ownerIDFromRequest(request)
+	if err != nil {
+		writeProblem(writer, validationProblem(request, err.Error()))
+		return
+	}
+	wallet, err := h.service.GetWallet(request.Context(), ownerID, walletID)
 	if err != nil {
 		h.writeServiceError(writer, request, err)
 		return
@@ -130,13 +140,18 @@ func (h *Handler) changeBalance(writer http.ResponseWriter, request *http.Reques
 		h.writeServiceError(writer, request, err)
 		return
 	}
+	ownerID, err := ownerIDFromRequest(request)
+	if err != nil {
+		writeProblem(writer, validationProblem(request, err.Error()))
+		return
+	}
 	idempotency, err := idempotencyFromRequest(request)
 	if err != nil {
 		writeProblem(writer, validationProblem(request, err.Error()))
 		return
 	}
 	result, err := operation(request.Context(), application.MoneyCommand{
-		WalletID: walletID, Money: money, Idempotency: idempotency,
+		OwnerID: ownerID, WalletID: walletID, Money: money, Idempotency: idempotency,
 	})
 	if err != nil {
 		h.writeServiceError(writer, request, err)
@@ -165,13 +180,18 @@ func (h *Handler) transfer(writer http.ResponseWriter, request *http.Request) {
 		h.writeServiceError(writer, request, err)
 		return
 	}
+	ownerID, err := ownerIDFromRequest(request)
+	if err != nil {
+		writeProblem(writer, validationProblem(request, err.Error()))
+		return
+	}
 	idempotency, err := idempotencyFromRequest(request)
 	if err != nil {
 		writeProblem(writer, validationProblem(request, err.Error()))
 		return
 	}
 	result, err := h.service.Transfer(request.Context(), application.TransferCommand{
-		SourceWalletID: body.SourceWalletID, DestinationWalletID: body.DestinationWalletID,
+		OwnerID: ownerID, SourceWalletID: body.SourceWalletID, DestinationWalletID: body.DestinationWalletID,
 		Money: money, Idempotency: idempotency,
 	})
 	if err != nil {
@@ -214,7 +234,12 @@ func (h *Handler) listHistory(writer http.ResponseWriter, request *http.Request)
 		}
 		typeFilter = &value
 	}
-	page, err := h.service.ListHistory(request.Context(), walletID, cursor, limit, typeFilter)
+	ownerID, err := ownerIDFromRequest(request)
+	if err != nil {
+		writeProblem(writer, validationProblem(request, err.Error()))
+		return
+	}
+	page, err := h.service.ListHistory(request.Context(), ownerID, walletID, cursor, limit, typeFilter)
 	if err != nil {
 		h.writeServiceError(writer, request, err)
 		return
@@ -237,7 +262,12 @@ func (h *Handler) getTransaction(writer http.ResponseWriter, request *http.Reque
 		writeProblem(writer, validationProblem(request, "transactionId must be a valid UUID"))
 		return
 	}
-	result, err := h.service.GetTransaction(request.Context(), transactionID)
+	ownerID, err := ownerIDFromRequest(request)
+	if err != nil {
+		writeProblem(writer, validationProblem(request, err.Error()))
+		return
+	}
+	result, err := h.service.GetTransaction(request.Context(), ownerID, transactionID)
 	if err != nil {
 		h.writeServiceError(writer, request, err)
 		return
@@ -348,14 +378,15 @@ func idempotencyFromRequest(request *http.Request) (application.Idempotency, err
 	if key == "" || len(key) > 128 {
 		return application.Idempotency{}, errors.New("Idempotency-Key header is required and must not exceed 128 characters")
 	}
-	scope := strings.TrimSpace(request.Header.Get("X-Client-ID"))
-	if scope == "" {
-		scope = "public"
+	return application.Idempotency{Key: key}, nil
+}
+
+func ownerIDFromRequest(request *http.Request) (string, error) {
+	ownerID := strings.ToLower(strings.TrimSpace(request.Header.Get("X-User-ID")))
+	if !identity.IsUUID(ownerID) {
+		return "", errors.New("X-User-ID header is required and must be a valid UUID")
 	}
-	if len(scope) > 128 {
-		return application.Idempotency{}, errors.New("X-Client-ID must not exceed 128 characters")
-	}
-	return application.Idempotency{Scope: scope, Key: key}, nil
+	return ownerID, nil
 }
 
 func writeProblem(writer http.ResponseWriter, value problem) {

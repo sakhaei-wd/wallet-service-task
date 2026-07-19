@@ -25,6 +25,12 @@ func problemForError(request *http.Request, err error) problem {
 		status, code, title, detail = http.StatusServiceUnavailable, "REQUEST_CANCELLED", "Request could not be completed", "The request was cancelled or exceeded its deadline."
 	case errors.Is(err, domain.ErrWalletNotFound), errors.Is(err, domain.ErrTransactionNotFound):
 		status, code, title, detail = http.StatusNotFound, "RESOURCE_NOT_FOUND", "Resource not found", err.Error()
+	case errors.Is(err, domain.ErrWalletAccessDenied):
+		status, code, title, detail = http.StatusForbidden, "WALLET_ACCESS_DENIED", "Wallet access denied", err.Error()
+	case errors.Is(err, domain.ErrOwnerHasWallet):
+		status, code, title, detail = http.StatusConflict, "OWNER_ALREADY_HAS_WALLET", "Wallet already exists", err.Error()
+	case errors.Is(err, domain.ErrInvalidOwner):
+		status, code, title, detail = http.StatusBadRequest, "INVALID_OWNER", "Invalid owner", err.Error()
 	case errors.Is(err, domain.ErrInvalidAmount):
 		status, code, title, detail = http.StatusUnprocessableEntity, "INVALID_AMOUNT", "Invalid amount", err.Error()
 	case errors.Is(err, domain.ErrInvalidCurrency):

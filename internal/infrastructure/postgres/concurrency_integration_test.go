@@ -34,19 +34,19 @@ func TestConcurrentWithdrawalsPreserveBalanceInvariant(t *testing.T) {
 	}
 
 	service := application.NewService(store, identity.UUIDGenerator{}, clock.System{})
-	scope := fmt.Sprintf("test-%d", time.Now().UnixNano())
+	ownerID := mustUUID(t)
 	wallet, _, err := service.CreateWallet(ctx, application.CreateWalletCommand{
-		Currency: "USD", Idempotency: application.Idempotency{Scope: scope, Key: "create"},
+		OwnerID: ownerID, Currency: "USD", Idempotency: application.Idempotency{Key: "create"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { cleanupWalletTestData(store, scope, wallet.ID) })
+	t.Cleanup(func() { cleanupWalletTestData(store, ownerID, wallet.ID) })
 
 	deposit, _ := domain.NewMoney(10_000, "USD")
 	if _, err := service.Deposit(ctx, application.MoneyCommand{
-		WalletID: wallet.ID, Money: deposit,
-		Idempotency: application.Idempotency{Scope: scope, Key: "deposit"},
+		OwnerID: ownerID, WalletID: wallet.ID, Money: deposit,
+		Idempotency: application.Idempotency{Key: "deposit"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -60,8 +60,8 @@ func TestConcurrentWithdrawalsPreserveBalanceInvariant(t *testing.T) {
 		go func(index int) {
 			defer waitGroup.Done()
 			_, err := service.Withdraw(ctx, application.MoneyCommand{
-				WalletID: wallet.ID, Money: withdrawal,
-				Idempotency: application.Idempotency{Scope: scope, Key: fmt.Sprintf("withdraw-%d", index)},
+				OwnerID: ownerID, WalletID: wallet.ID, Money: withdrawal,
+				Idempotency: application.Idempotency{Key: fmt.Sprintf("withdraw-%d", index)},
 			})
 			switch {
 			case err == nil:
@@ -77,14 +77,14 @@ func TestConcurrentWithdrawalsPreserveBalanceInvariant(t *testing.T) {
 	if succeeded.Load() != 10 || insufficient.Load() != 5 {
 		t.Fatalf("expected 10 successes and 5 rejections, got %d and %d", succeeded.Load(), insufficient.Load())
 	}
-	updated, err := service.GetWallet(ctx, wallet.ID)
+	updated, err := service.GetWallet(ctx, ownerID, wallet.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if updated.BalanceMinor != 0 {
 		t.Fatalf("expected zero balance, got %d", updated.BalanceMinor)
 	}
-	page, err := service.ListHistory(ctx, wallet.ID, 0, 100, nil)
+	page, err := service.ListHistory(ctx, ownerID, wallet.ID, 0, 100, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,26 +110,29 @@ func TestConcurrentOpposingTransfersPreserveTotalMoney(t *testing.T) {
 	}
 
 	service := application.NewService(store, identity.UUIDGenerator{}, clock.System{})
-	scope := fmt.Sprintf("transfer-test-%d", time.Now().UnixNano())
+	firstOwnerID, secondOwnerID := mustUUID(t), mustUUID(t)
 	first, _, err := service.CreateWallet(ctx, application.CreateWalletCommand{
-		Currency: "USD", Idempotency: application.Idempotency{Scope: scope, Key: "create-first"},
+		OwnerID: firstOwnerID, Currency: "USD", Idempotency: application.Idempotency{Key: "create-first"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	second, _, err := service.CreateWallet(ctx, application.CreateWalletCommand{
-		Currency: "USD", Idempotency: application.Idempotency{Scope: scope, Key: "create-second"},
+		OwnerID: secondOwnerID, Currency: "USD", Idempotency: application.Idempotency{Key: "create-second"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { cleanupTwoWalletTestData(store, scope, first.ID, second.ID) })
+	t.Cleanup(func() { cleanupTwoWalletTestData(store, []string{firstOwnerID, secondOwnerID}, first.ID, second.ID) })
 
 	funding, _ := domain.NewMoney(10_000, "USD")
-	for index, walletID := range []string{first.ID, second.ID} {
+	for index, wallet := range []struct {
+		ownerID string
+		wallet  domain.Wallet
+	}{{firstOwnerID, first}, {secondOwnerID, second}} {
 		if _, err := service.Deposit(ctx, application.MoneyCommand{
-			WalletID: walletID, Money: funding,
-			Idempotency: application.Idempotency{Scope: scope, Key: fmt.Sprintf("deposit-%d", index)},
+			OwnerID: wallet.ownerID, WalletID: wallet.wallet.ID, Money: funding,
+			Idempotency: application.Idempotency{Key: fmt.Sprintf("deposit-%d", index)},
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -140,18 +143,22 @@ func TestConcurrentOpposingTransfersPreserveTotalMoney(t *testing.T) {
 	errorsChannel := make(chan error, transferPairs*2)
 	var waitGroup sync.WaitGroup
 	for index := 0; index < transferPairs; index++ {
-		for direction, wallets := range [][2]string{{first.ID, second.ID}, {second.ID, first.ID}} {
+		for direction, transfer := range []struct {
+			ownerID     string
+			source      string
+			destination string
+		}{{firstOwnerID, first.ID, second.ID}, {secondOwnerID, second.ID, first.ID}} {
 			waitGroup.Add(1)
-			go func(index, direction int, source, destination string) {
+			go func(index, direction int, ownerID, source, destination string) {
 				defer waitGroup.Done()
 				_, err := service.Transfer(ctx, application.TransferCommand{
-					SourceWalletID: source, DestinationWalletID: destination, Money: amount,
-					Idempotency: application.Idempotency{Scope: scope, Key: fmt.Sprintf("transfer-%d-%d", index, direction)},
+					OwnerID: ownerID, SourceWalletID: source, DestinationWalletID: destination, Money: amount,
+					Idempotency: application.Idempotency{Key: fmt.Sprintf("transfer-%d-%d", index, direction)},
 				})
 				if err != nil {
 					errorsChannel <- err
 				}
-			}(index, direction, wallets[0], wallets[1])
+			}(index, direction, transfer.ownerID, transfer.source, transfer.destination)
 		}
 	}
 	waitGroup.Wait()
@@ -160,11 +167,11 @@ func TestConcurrentOpposingTransfersPreserveTotalMoney(t *testing.T) {
 		t.Errorf("transfer failed: %v", err)
 	}
 
-	firstAfter, err := service.GetWallet(ctx, first.ID)
+	firstAfter, err := service.GetWallet(ctx, firstOwnerID, first.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	secondAfter, err := service.GetWallet(ctx, second.ID)
+	secondAfter, err := service.GetWallet(ctx, secondOwnerID, second.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,11 +192,20 @@ func cleanupWalletTestData(store *postgres.Store, scope, walletID string) {
 	_, _ = store.Pool().Exec(ctx, "DELETE FROM wallets WHERE id = $1", walletID)
 }
 
-func cleanupTwoWalletTestData(store *postgres.Store, scope, firstWalletID, secondWalletID string) {
+func cleanupTwoWalletTestData(store *postgres.Store, scopes []string, firstWalletID, secondWalletID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, _ = store.Pool().Exec(ctx, "DELETE FROM idempotency_records WHERE scope = $1", scope)
+	_, _ = store.Pool().Exec(ctx, "DELETE FROM idempotency_records WHERE scope = ANY($1::text[])", scopes)
 	_, _ = store.Pool().Exec(ctx, "DELETE FROM ledger_entries WHERE wallet_id = $1 OR wallet_id = $2", firstWalletID, secondWalletID)
 	_, _ = store.Pool().Exec(ctx, "DELETE FROM financial_transactions WHERE source_wallet_id IN ($1, $2) OR destination_wallet_id IN ($1, $2)", firstWalletID, secondWalletID)
 	_, _ = store.Pool().Exec(ctx, "DELETE FROM wallets WHERE id IN ($1, $2)", firstWalletID, secondWalletID)
+}
+
+func mustUUID(t *testing.T) string {
+	t.Helper()
+	value, err := (identity.UUIDGenerator{}).New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return value
 }

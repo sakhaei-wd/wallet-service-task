@@ -35,6 +35,8 @@ PostgreSQL adapter
 
 The domain has no dependency on HTTP, PostgreSQL, or `pgx`. The application layer coordinates use cases through persistence interfaces. The server entry point explicitly injects the PostgreSQL store, clock, ID generator, service, and HTTP handlers.
 
+Wallet ownership is explicit: every wallet stores a non-null external `owner_id`, and a unique constraint enforces at most one wallet per owner. The application authorizes wallet reads and mutations against that owner. Transfers require ownership of the source wallet while allowing a destination owned by another user. The assignment's `X-User-ID` header represents a principal asserted by a trusted upstream; it is an integration seam, not credential authentication.
+
 Why this was chosen:
 
 - Deposits, withdrawals, transfers, balances, and history share one strong transaction boundary.
@@ -164,7 +166,7 @@ Tradeoffs:
 
 ### 1.7 Idempotency is part of the database transaction
 
-Every mutation requires an idempotency key. The database uniquely identifies a request by `(scope, key)` and stores a SHA-256 fingerprint of the normalized request plus the created resource ID.
+Every mutation requires an idempotency key. The database uniquely identifies a request by `(scope, key)`, where `scope` is derived internally from the normalized owner UUID, and stores a SHA-256 fingerprint of the normalized request plus the created resource ID.
 
 Behavior:
 
@@ -181,10 +183,10 @@ Why this was chosen:
 Tradeoffs:
 
 - Idempotency records grow indefinitely in the current design.
-- The scope must come from trusted identity in production.
+- The owner principal must come from verified identity in production.
 - A retention policy must be longer than the maximum legitimate retry window and aligned with audit requirements.
 
-The current `X-Client-ID` mechanism is an assignment-level namespace, not an authentication mechanism.
+The current `X-User-ID` contract is an assignment-level trusted-upstream identity assertion, not an authentication mechanism. A public deployment must remove or overwrite caller-supplied values after validating credentials.
 
 ### 1.8 Explicit SQL with `pgx`
 
@@ -485,7 +487,7 @@ Those costs are justified when the system represents real money because they mak
 
 ### Other important limitations
 
-The absence of authentication and authorization is an immediate production launch blocker, even though it was outside the assignment scope. `X-Client-ID` cannot be trusted as caller identity. Rate limiting, audit-event retention, metrics, tracing, alerting, disaster-recovery testing, and external settlement integration are also required before production use.
+The absence of credential authentication is an immediate production launch blocker, even though it was outside the assignment scope. Ownership authorization is implemented, but a public client must not be trusted to assert `X-User-ID`; verified authentication middleware must supply the principal. Rate limiting, audit-event retention, metrics, tracing, alerting, disaster-recovery testing, and external settlement integration are also required before production use.
 
 If the service remains a closed, trusted wallet simulator rather than a real-money system, then the biggest technical scaling limitation becomes the single writable PostgreSQL primary and the per-wallet row lock. At several million well-distributed daily operations, that limit is manageable. At extreme aggregate volume or extreme hot-wallet contention, it requires the staged changes described above rather than an immediate rewrite.
 

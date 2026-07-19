@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
   title: Wallet Service API
-  version: 1.0.0
-  description: Atomic and idempotent wallet operations.
+  version: 1.1.0
+  description: Atomic, owner-scoped, and idempotent wallet operations.
 servers:
   - url: http://localhost:8080
 paths:
@@ -22,7 +22,7 @@ paths:
       operationId: createWallet
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
-        - $ref: "#/components/parameters/ClientID"
+        - $ref: "#/components/parameters/UserID"
       requestBody:
         required: true
         content:
@@ -50,6 +50,7 @@ paths:
   /v1/wallets/{walletId}:
     parameters:
       - $ref: "#/components/parameters/WalletID"
+      - $ref: "#/components/parameters/UserID"
     get:
       operationId: getWallet
       responses:
@@ -59,42 +60,46 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Wallet" }
         "400": { $ref: "#/components/responses/Problem" }
+        "403": { $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
   /v1/wallets/{walletId}/deposits:
     parameters:
       - $ref: "#/components/parameters/WalletID"
+      - $ref: "#/components/parameters/UserID"
     post:
       operationId: deposit
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
-        - $ref: "#/components/parameters/ClientID"
       requestBody: { $ref: "#/components/requestBodies/Money" }
       responses:
         "201": { $ref: "#/components/responses/OperationCreated" }
         "200": { $ref: "#/components/responses/Operation" }
         "400": { $ref: "#/components/responses/Problem" }
+        "403": { $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
         "409": { $ref: "#/components/responses/Problem" }
         "422": { $ref: "#/components/responses/Problem" }
   /v1/wallets/{walletId}/withdrawals:
     parameters:
       - $ref: "#/components/parameters/WalletID"
+      - $ref: "#/components/parameters/UserID"
     post:
       operationId: withdraw
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
-        - $ref: "#/components/parameters/ClientID"
       requestBody: { $ref: "#/components/requestBodies/Money" }
       responses:
         "201": { $ref: "#/components/responses/OperationCreated" }
         "200": { $ref: "#/components/responses/Operation" }
         "400": { $ref: "#/components/responses/Problem" }
+        "403": { $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
         "409": { $ref: "#/components/responses/Problem" }
         "422": { $ref: "#/components/responses/Problem" }
   /v1/wallets/{walletId}/transactions:
     parameters:
       - $ref: "#/components/parameters/WalletID"
+      - $ref: "#/components/parameters/UserID"
     get:
       operationId: listWalletTransactions
       parameters:
@@ -121,13 +126,14 @@ paths:
                     items: { $ref: "#/components/schemas/HistoryItem" }
                   nextCursor: { type: string }
         "400": { $ref: "#/components/responses/Problem" }
+        "403": { $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
   /v1/transfers:
     post:
       operationId: transfer
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
-        - $ref: "#/components/parameters/ClientID"
+        - $ref: "#/components/parameters/UserID"
       requestBody:
         required: true
         content:
@@ -145,6 +151,7 @@ paths:
         "201": { $ref: "#/components/responses/OperationCreated" }
         "200": { $ref: "#/components/responses/Operation" }
         "400": { $ref: "#/components/responses/Problem" }
+        "403": { $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
         "409": { $ref: "#/components/responses/Problem" }
         "422": { $ref: "#/components/responses/Problem" }
@@ -156,9 +163,11 @@ paths:
           in: path
           required: true
           schema: { type: string, format: uuid }
+        - $ref: "#/components/parameters/UserID"
       responses:
         "200": { $ref: "#/components/responses/Operation" }
         "400": { $ref: "#/components/responses/Problem" }
+        "403": { $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
 components:
   parameters:
@@ -172,12 +181,12 @@ components:
       in: header
       required: true
       schema: { type: string, minLength: 1, maxLength: 128 }
-    ClientID:
-      name: X-Client-ID
+    UserID:
+      name: X-User-ID
       in: header
-      required: false
-      description: Demo idempotency namespace; production deployments derive this from authentication.
-      schema: { type: string, maxLength: 128 }
+      required: true
+      description: Trusted upstream user principal for this assignment; production deployments derive it from verified authentication credentials.
+      schema: { type: string, format: uuid }
   requestBodies:
     Money:
       required: true
@@ -219,9 +228,10 @@ components:
       enum: [DEPOSIT, WITHDRAWAL, TRANSFER]
     Wallet:
       type: object
-      required: [id, currency, balance, status, version, createdAt, updatedAt]
+      required: [id, ownerId, currency, balance, status, version, createdAt, updatedAt]
       properties:
         id: { type: string, format: uuid }
+        ownerId: { type: string, format: uuid }
         currency: { $ref: "#/components/schemas/Currency" }
         balance: { type: string }
         status: { type: string, enum: [ACTIVE, FROZEN, CLOSED] }

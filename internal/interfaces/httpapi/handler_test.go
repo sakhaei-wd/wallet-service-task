@@ -20,16 +20,17 @@ const (
 	testWalletID      = "11111111-1111-4111-8111-111111111111"
 	testDestinationID = "22222222-2222-4222-8222-222222222222"
 	testTransactionID = "33333333-3333-4333-8333-333333333333"
+	testOwnerID       = "44444444-4444-4444-8444-444444444444"
 )
 
 type stubService struct {
 	createWallet   func(context.Context, application.CreateWalletCommand) (domain.Wallet, bool, error)
-	getWallet      func(context.Context, string) (domain.Wallet, error)
+	getWallet      func(context.Context, string, string) (domain.Wallet, error)
 	deposit        func(context.Context, application.MoneyCommand) (domain.OperationResult, error)
 	withdraw       func(context.Context, application.MoneyCommand) (domain.OperationResult, error)
 	transfer       func(context.Context, application.TransferCommand) (domain.OperationResult, error)
-	getTransaction func(context.Context, string) (domain.OperationResult, error)
-	listHistory    func(context.Context, string, int64, int, *domain.TransactionType) (domain.HistoryPage, error)
+	getTransaction func(context.Context, string, string) (domain.OperationResult, error)
+	listHistory    func(context.Context, string, string, int64, int, *domain.TransactionType) (domain.HistoryPage, error)
 	ping           func(context.Context) error
 }
 
@@ -37,8 +38,8 @@ func (stub *stubService) CreateWallet(ctx context.Context, command application.C
 	return stub.createWallet(ctx, command)
 }
 
-func (stub *stubService) GetWallet(ctx context.Context, walletID string) (domain.Wallet, error) {
-	return stub.getWallet(ctx, walletID)
+func (stub *stubService) GetWallet(ctx context.Context, ownerID, walletID string) (domain.Wallet, error) {
+	return stub.getWallet(ctx, ownerID, walletID)
 }
 
 func (stub *stubService) Deposit(ctx context.Context, command application.MoneyCommand) (domain.OperationResult, error) {
@@ -53,12 +54,12 @@ func (stub *stubService) Transfer(ctx context.Context, command application.Trans
 	return stub.transfer(ctx, command)
 }
 
-func (stub *stubService) GetTransaction(ctx context.Context, transactionID string) (domain.OperationResult, error) {
-	return stub.getTransaction(ctx, transactionID)
+func (stub *stubService) GetTransaction(ctx context.Context, ownerID, transactionID string) (domain.OperationResult, error) {
+	return stub.getTransaction(ctx, ownerID, transactionID)
 }
 
-func (stub *stubService) ListHistory(ctx context.Context, walletID string, cursor int64, limit int, transactionType *domain.TransactionType) (domain.HistoryPage, error) {
-	return stub.listHistory(ctx, walletID, cursor, limit, transactionType)
+func (stub *stubService) ListHistory(ctx context.Context, ownerID, walletID string, cursor int64, limit int, transactionType *domain.TransactionType) (domain.HistoryPage, error) {
+	return stub.listHistory(ctx, ownerID, walletID, cursor, limit, transactionType)
 }
 
 func (stub *stubService) Ping(ctx context.Context) error { return stub.ping(ctx) }
@@ -129,7 +130,7 @@ func TestCreateWalletResponses(t *testing.T) {
 			t.Parallel()
 			service := defaultStubService()
 			service.createWallet = func(_ context.Context, command application.CreateWalletCommand) (domain.Wallet, bool, error) {
-				if command.Currency != "USD" || command.Idempotency.Key != "create-key" || command.Idempotency.Scope != "client-1" {
+				if command.OwnerID != testOwnerID || command.Currency != "USD" || command.Idempotency.Key != "create-key" {
 					t.Fatalf("unexpected command: %+v", command)
 				}
 				return testWallet(), test.replayed, nil
@@ -141,9 +142,36 @@ func TestCreateWalletResponses(t *testing.T) {
 			if response.Header().Get("Location") != "/v1/wallets/"+testWalletID {
 				t.Fatalf("unexpected Location: %s", response.Header().Get("Location"))
 			}
-			assertJSONContains(t, response, `"balance":"10.00"`, `"currency":"USD"`)
+			assertJSONContains(t, response, `"ownerId":"`+testOwnerID+`"`, `"balance":"10.00"`, `"currency":"USD"`)
 		})
 	}
+}
+
+func TestSecondWalletForOwnerReturnsConflict(t *testing.T) {
+	t.Parallel()
+	service := defaultStubService()
+	service.createWallet = func(_ context.Context, command application.CreateWalletCommand) (domain.Wallet, bool, error) {
+		if command.OwnerID != testOwnerID {
+			t.Fatalf("unexpected owner ID: %s", command.OwnerID)
+		}
+		return domain.Wallet{}, false, domain.ErrOwnerHasWallet
+	}
+	response := performJSONRequest(testAPIHandler(service), http.MethodPost, "/v1/wallets", `{"currency":"USD"}`, "second-wallet")
+	if response.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", response.Code, response.Body.String())
+	}
+	assertJSONContains(t, response, `"code":"OWNER_ALREADY_HAS_WALLET"`)
+}
+
+func TestUserPrincipalHeaderIsRequired(t *testing.T) {
+	t.Parallel()
+	request := httptest.NewRequest(http.MethodGet, "/v1/wallets/"+testWalletID, nil)
+	response := httptest.NewRecorder()
+	testHandler().ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", response.Code, response.Body.String())
+	}
+	assertJSONContains(t, response, `"code":"INVALID_REQUEST"`, "X-User-ID")
 }
 
 func TestDepositAndWithdrawalRequests(t *testing.T) {
@@ -160,7 +188,7 @@ func TestDepositAndWithdrawalRequests(t *testing.T) {
 			t.Parallel()
 			service := defaultStubService()
 			operation := func(_ context.Context, command application.MoneyCommand) (domain.OperationResult, error) {
-				if command.WalletID != testWalletID || command.Money.Minor != 1234 || command.Money.Currency != "USD" {
+				if command.OwnerID != testOwnerID || command.WalletID != testWalletID || command.Money.Minor != 1234 || command.Money.Currency != "USD" {
 					t.Fatalf("unexpected command: %+v", command)
 				}
 				return testOperation(test.kind), nil
@@ -186,7 +214,7 @@ func TestTransferRequest(t *testing.T) {
 	t.Parallel()
 	service := defaultStubService()
 	service.transfer = func(_ context.Context, command application.TransferCommand) (domain.OperationResult, error) {
-		if command.SourceWalletID != testWalletID || command.DestinationWalletID != testDestinationID || command.Money.Minor != 2500 {
+		if command.OwnerID != testOwnerID || command.SourceWalletID != testWalletID || command.DestinationWalletID != testDestinationID || command.Money.Minor != 2500 {
 			t.Fatalf("unexpected command: %+v", command)
 		}
 		return testOperation(domain.TransactionTransfer), nil
@@ -202,21 +230,21 @@ func TestTransferRequest(t *testing.T) {
 func TestReadEndpoints(t *testing.T) {
 	t.Parallel()
 	service := defaultStubService()
-	service.getWallet = func(_ context.Context, walletID string) (domain.Wallet, error) {
-		if walletID != testWalletID {
-			t.Fatalf("unexpected wallet ID: %s", walletID)
+	service.getWallet = func(_ context.Context, ownerID, walletID string) (domain.Wallet, error) {
+		if ownerID != testOwnerID || walletID != testWalletID {
+			t.Fatalf("unexpected wallet query: owner=%s wallet=%s", ownerID, walletID)
 		}
 		return testWallet(), nil
 	}
-	service.getTransaction = func(_ context.Context, transactionID string) (domain.OperationResult, error) {
-		if transactionID != testTransactionID {
-			t.Fatalf("unexpected transaction ID: %s", transactionID)
+	service.getTransaction = func(_ context.Context, ownerID, transactionID string) (domain.OperationResult, error) {
+		if ownerID != testOwnerID || transactionID != testTransactionID {
+			t.Fatalf("unexpected transaction query: owner=%s transaction=%s", ownerID, transactionID)
 		}
 		return testOperation(domain.TransactionDeposit), nil
 	}
-	service.listHistory = func(_ context.Context, walletID string, cursor int64, limit int, transactionType *domain.TransactionType) (domain.HistoryPage, error) {
-		if walletID != testWalletID || cursor != 42 || limit != 10 || transactionType == nil || *transactionType != domain.TransactionTransfer {
-			t.Fatalf("unexpected history query: wallet=%s cursor=%d limit=%d type=%v", walletID, cursor, limit, transactionType)
+	service.listHistory = func(_ context.Context, ownerID, walletID string, cursor int64, limit int, transactionType *domain.TransactionType) (domain.HistoryPage, error) {
+		if ownerID != testOwnerID || walletID != testWalletID || cursor != 42 || limit != 10 || transactionType == nil || *transactionType != domain.TransactionTransfer {
+			t.Fatalf("unexpected history query: owner=%s wallet=%s cursor=%d limit=%d type=%v", ownerID, walletID, cursor, limit, transactionType)
 		}
 		return domain.HistoryPage{Items: []domain.HistoryItem{{
 			Sequence: 41, TransactionID: testTransactionID, Type: domain.TransactionTransfer,
@@ -254,6 +282,8 @@ func TestDomainErrorsMapToProblemResponses(t *testing.T) {
 		wantCode   string
 	}{
 		{name: "not found", err: domain.ErrWalletNotFound, wantStatus: 404, wantCode: "RESOURCE_NOT_FOUND"},
+		{name: "access denied", err: domain.ErrWalletAccessDenied, wantStatus: 403, wantCode: "WALLET_ACCESS_DENIED"},
+		{name: "owner already has wallet", err: domain.ErrOwnerHasWallet, wantStatus: 409, wantCode: "OWNER_ALREADY_HAS_WALLET"},
 		{name: "invalid amount", err: domain.ErrInvalidAmount, wantStatus: 422, wantCode: "INVALID_AMOUNT"},
 		{name: "invalid currency", err: domain.ErrInvalidCurrency, wantStatus: 422, wantCode: "INVALID_CURRENCY"},
 		{name: "currency mismatch", err: domain.ErrCurrencyMismatch, wantStatus: 422, wantCode: "CURRENCY_MISMATCH"},
@@ -268,7 +298,7 @@ func TestDomainErrorsMapToProblemResponses(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			service := defaultStubService()
-			service.getWallet = func(context.Context, string) (domain.Wallet, error) { return domain.Wallet{}, test.err }
+			service.getWallet = func(context.Context, string, string) (domain.Wallet, error) { return domain.Wallet{}, test.err }
 			response := performRequest(testAPIHandler(service), http.MethodGet, "/v1/wallets/"+testWalletID, "", "", "")
 			if response.Code != test.wantStatus {
 				t.Fatalf("expected %d, got %d: %s", test.wantStatus, response.Code, response.Body.String())
@@ -418,7 +448,7 @@ func TestHealthAndMiddlewareBehavior(t *testing.T) {
 	})
 	t.Run("panic is recovered", func(t *testing.T) {
 		service := defaultStubService()
-		service.getWallet = func(context.Context, string) (domain.Wallet, error) { panic("boom") }
+		service.getWallet = func(context.Context, string, string) (domain.Wallet, error) { panic("boom") }
 		response := performRequest(testAPIHandler(service), http.MethodGet, "/v1/wallets/"+testWalletID, "", "", "")
 		if response.Code != http.StatusInternalServerError {
 			t.Fatalf("expected 500, got %d: %s", response.Code, response.Body.String())
@@ -433,7 +463,7 @@ func TestHealthAndMiddlewareBehavior(t *testing.T) {
 	})
 	t.Run("request timeout is propagated", func(t *testing.T) {
 		service := defaultStubService()
-		service.getWallet = func(ctx context.Context, _ string) (domain.Wallet, error) {
+		service.getWallet = func(ctx context.Context, _, _ string) (domain.Wallet, error) {
 			<-ctx.Done()
 			return domain.Wallet{}, ctx.Err()
 		}
@@ -463,7 +493,7 @@ func defaultStubService() *stubService {
 		createWallet: func(context.Context, application.CreateWalletCommand) (domain.Wallet, bool, error) {
 			return domain.Wallet{}, false, nil
 		},
-		getWallet: func(context.Context, string) (domain.Wallet, error) { return domain.Wallet{}, nil },
+		getWallet: func(context.Context, string, string) (domain.Wallet, error) { return domain.Wallet{}, nil },
 		deposit: func(context.Context, application.MoneyCommand) (domain.OperationResult, error) {
 			return domain.OperationResult{}, nil
 		},
@@ -473,8 +503,10 @@ func defaultStubService() *stubService {
 		transfer: func(context.Context, application.TransferCommand) (domain.OperationResult, error) {
 			return domain.OperationResult{}, nil
 		},
-		getTransaction: func(context.Context, string) (domain.OperationResult, error) { return domain.OperationResult{}, nil },
-		listHistory: func(context.Context, string, int64, int, *domain.TransactionType) (domain.HistoryPage, error) {
+		getTransaction: func(context.Context, string, string) (domain.OperationResult, error) {
+			return domain.OperationResult{}, nil
+		},
+		listHistory: func(context.Context, string, string, int64, int, *domain.TransactionType) (domain.HistoryPage, error) {
 			return domain.HistoryPage{}, nil
 		},
 		ping: func(context.Context) error { return nil },
@@ -493,7 +525,7 @@ func performRequest(handler http.Handler, method, path, body, contentType, key s
 	if key != "" {
 		request.Header.Set("Idempotency-Key", key)
 	}
-	request.Header.Set("X-Client-ID", "client-1")
+	request.Header.Set("X-User-ID", testOwnerID)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	return response
@@ -509,7 +541,7 @@ func assertJSONContains(t *testing.T, response *httptest.ResponseRecorder, value
 }
 
 func testWallet() domain.Wallet {
-	return domain.Wallet{ID: testWalletID, Currency: "USD", BalanceMinor: 1000, Status: domain.WalletActive, Version: 2, CreatedAt: testTime(), UpdatedAt: testTime()}
+	return domain.Wallet{ID: testWalletID, OwnerID: testOwnerID, Currency: "USD", BalanceMinor: 1000, Status: domain.WalletActive, Version: 2, CreatedAt: testTime(), UpdatedAt: testTime()}
 }
 
 func testOperation(kind domain.TransactionType) domain.OperationResult {

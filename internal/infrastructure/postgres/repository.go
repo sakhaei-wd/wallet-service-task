@@ -46,10 +46,14 @@ func (r *repository) ReserveIdempotency(ctx context.Context, scope, key, request
 
 func (r *repository) CreateWallet(ctx context.Context, wallet domain.Wallet) error {
 	_, err := r.executor.Exec(ctx, `
-		INSERT INTO wallets (id, currency, balance_minor, status, version, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		wallet.ID, wallet.Currency, wallet.BalanceMinor, wallet.Status, wallet.Version, wallet.CreatedAt, wallet.UpdatedAt)
+		INSERT INTO wallets (id, owner_id, currency, balance_minor, status, version, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		wallet.ID, wallet.OwnerID, wallet.Currency, wallet.BalanceMinor, wallet.Status, wallet.Version, wallet.CreatedAt, wallet.UpdatedAt)
 	if err != nil {
+		var postgresError *pgconn.PgError
+		if errors.As(err, &postgresError) && postgresError.Code == "23505" && postgresError.ConstraintName == "wallets_owner_id_key" {
+			return domain.ErrOwnerHasWallet
+		}
 		return fmt.Errorf("create wallet: %w", err)
 	}
 	return nil
@@ -57,20 +61,20 @@ func (r *repository) CreateWallet(ctx context.Context, wallet domain.Wallet) err
 
 func (r *repository) GetWallet(ctx context.Context, walletID string) (domain.Wallet, error) {
 	return r.queryWallet(ctx, `
-		SELECT id::text, currency, balance_minor, status, version, created_at, updated_at
+		SELECT id::text, owner_id::text, currency, balance_minor, status, version, created_at, updated_at
 		FROM wallets WHERE id = $1`, walletID)
 }
 
 func (r *repository) GetWalletForUpdate(ctx context.Context, walletID string) (domain.Wallet, error) {
 	return r.queryWallet(ctx, `
-		SELECT id::text, currency, balance_minor, status, version, created_at, updated_at
+		SELECT id::text, owner_id::text, currency, balance_minor, status, version, created_at, updated_at
 		FROM wallets WHERE id = $1 FOR UPDATE`, walletID)
 }
 
 func (r *repository) queryWallet(ctx context.Context, query, walletID string) (domain.Wallet, error) {
 	var wallet domain.Wallet
 	err := r.executor.QueryRow(ctx, query, walletID).Scan(
-		&wallet.ID, &wallet.Currency, &wallet.BalanceMinor, &wallet.Status,
+		&wallet.ID, &wallet.OwnerID, &wallet.Currency, &wallet.BalanceMinor, &wallet.Status,
 		&wallet.Version, &wallet.CreatedAt, &wallet.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {

@@ -24,6 +24,7 @@ type transferRequest struct {
 
 type walletResponse struct {
 	ID        string    `json:"id"`
+	OwnerID   string    `json:"ownerId"`
 	Currency  string    `json:"currency"`
 	Balance   string    `json:"balance"`
 	Status    string    `json:"status"`
@@ -67,7 +68,7 @@ type historyResponse struct {
 
 func presentWallet(wallet domain.Wallet) walletResponse {
 	return walletResponse{
-		ID: wallet.ID, Currency: wallet.Currency,
+		ID: wallet.ID, OwnerID: wallet.OwnerID, Currency: wallet.Currency,
 		Balance: domain.FormatMinor(wallet.BalanceMinor, wallet.Currency),
 		Status:  string(wallet.Status), Version: wallet.Version,
 		CreatedAt: wallet.CreatedAt, UpdatedAt: wallet.UpdatedAt,

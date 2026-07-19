@@ -14,6 +14,8 @@ import (
 
 var errInjected = errors.New("injected persistence failure")
 
+const testOwnerID = "owner-1"
+
 type fixedClock struct{ value time.Time }
 
 func (clock fixedClock) Now() time.Time { return clock.value }
@@ -171,6 +173,11 @@ func (tx *memoryTransaction) CreateWallet(_ context.Context, wallet domain.Walle
 	if err := tx.fail("CreateWallet"); err != nil {
 		return err
 	}
+	for _, existing := range tx.state.wallets {
+		if existing.OwnerID == wallet.OwnerID {
+			return domain.ErrOwnerHasWallet
+		}
+	}
 	tx.state.wallets[wallet.ID] = wallet
 	return nil
 }
@@ -236,7 +243,7 @@ func TestCreateWalletAndIdempotentReplay(t *testing.T) {
 	t.Parallel()
 	store := newMemoryStore()
 	service := newTestService(store, "wallet-1", "unused-id")
-	command := CreateWalletCommand{Currency: "usd", Idempotency: testIdempotency("create")}
+	command := CreateWalletCommand{OwnerID: testOwnerID, Currency: "usd", Idempotency: testIdempotency("create")}
 
 	created, replayed, err := service.CreateWallet(context.Background(), command)
 	if err != nil || replayed {
@@ -251,6 +258,76 @@ func TestCreateWalletAndIdempotentReplay(t *testing.T) {
 	}
 	if replayedWallet.ID != created.ID || len(store.state.wallets) != 1 {
 		t.Fatalf("replay created another wallet: %+v", replayedWallet)
+	}
+}
+
+func TestOwnerCanHaveOnlyOneWallet(t *testing.T) {
+	store := newMemoryStore()
+	service := newTestService(store, "wallet-1", "wallet-2")
+
+	first, _, err := service.CreateWallet(context.Background(), CreateWalletCommand{
+		OwnerID: testOwnerID, Currency: "USD", Idempotency: testIdempotency("first"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = service.CreateWallet(context.Background(), CreateWalletCommand{
+		OwnerID: testOwnerID, Currency: "USD", Idempotency: testIdempotency("second"),
+	})
+	if !errors.Is(err, domain.ErrOwnerHasWallet) {
+		t.Fatalf("expected owner wallet conflict, got %v", err)
+	}
+	if len(store.state.wallets) != 1 || store.state.wallets[first.ID].OwnerID != testOwnerID {
+		t.Fatalf("owner uniqueness failure changed state: %+v", store.state.wallets)
+	}
+}
+
+func TestWalletOwnershipIsEnforced(t *testing.T) {
+	store := newMemoryStore(testWallet("wallet-1", "USD", 100), testWallet("wallet-2", "USD", 100))
+	service := newTestService(store, "transaction-1", "transaction-2", "transaction-3")
+	otherOwner := "owner-2"
+
+	if _, err := service.GetWallet(context.Background(), otherOwner, "wallet-1"); !errors.Is(err, domain.ErrWalletAccessDenied) {
+		t.Fatalf("expected get-wallet access denial, got %v", err)
+	}
+	if _, err := service.ListHistory(context.Background(), otherOwner, "wallet-1", 0, 10, nil); !errors.Is(err, domain.ErrWalletAccessDenied) {
+		t.Fatalf("expected history access denial, got %v", err)
+	}
+	money := domain.Money{Minor: 10, Currency: "USD"}
+	if _, err := service.Withdraw(context.Background(), MoneyCommand{
+		OwnerID: otherOwner, WalletID: "wallet-1", Money: money, Idempotency: testIdempotency("withdraw"),
+	}); !errors.Is(err, domain.ErrWalletAccessDenied) {
+		t.Fatalf("expected withdrawal access denial, got %v", err)
+	}
+	if _, err := service.Deposit(context.Background(), MoneyCommand{
+		OwnerID: otherOwner, WalletID: "wallet-1", Money: money, Idempotency: testIdempotency("deposit"),
+	}); !errors.Is(err, domain.ErrWalletAccessDenied) {
+		t.Fatalf("expected deposit access denial, got %v", err)
+	}
+	if _, err := service.Transfer(context.Background(), TransferCommand{
+		OwnerID: otherOwner, SourceWalletID: "wallet-1", DestinationWalletID: "wallet-2", Money: money,
+		Idempotency: testIdempotency("transfer"),
+	}); !errors.Is(err, domain.ErrWalletAccessDenied) {
+		t.Fatalf("expected transfer access denial, got %v", err)
+	}
+	assertUnchangedWallet(t, store, "wallet-1", 100)
+}
+
+func TestTransactionIsVisibleOnlyToParticipatingOwner(t *testing.T) {
+	store := newMemoryStore(testWallet("wallet-1", "USD", 100))
+	service := newTestService(store, "transaction-1")
+	result, err := service.Deposit(context.Background(), MoneyCommand{
+		OwnerID: testOwnerID, WalletID: "wallet-1", Money: domain.Money{Minor: 10, Currency: "USD"},
+		Idempotency: testIdempotency("deposit"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.GetTransaction(context.Background(), testOwnerID, result.Transaction.ID); err != nil {
+		t.Fatalf("participating owner could not read transaction: %v", err)
+	}
+	if _, err := service.GetTransaction(context.Background(), "owner-2", result.Transaction.ID); !errors.Is(err, domain.ErrWalletAccessDenied) {
+		t.Fatalf("expected transaction access denial, got %v", err)
 	}
 }
 
@@ -273,7 +350,7 @@ func TestBalanceOperations(t *testing.T) {
 			t.Parallel()
 			store := newMemoryStore(testWallet("wallet-1", "USD", test.initial))
 			service := newTestService(store, "transaction-1")
-			command := MoneyCommand{WalletID: "wallet-1", Money: domain.Money{Minor: test.amount, Currency: "USD"}, Idempotency: testIdempotency(test.name)}
+			command := MoneyCommand{OwnerID: testOwnerID, WalletID: "wallet-1", Money: domain.Money{Minor: test.amount, Currency: "USD"}, Idempotency: testIdempotency(test.name)}
 			var result domain.OperationResult
 			var err error
 			if test.operation == domain.TransactionDeposit {
@@ -314,7 +391,7 @@ func TestInvalidBalanceOperationsDoNotMutateState(t *testing.T) {
 			t.Parallel()
 			store := newMemoryStore(testWallet("wallet-1", "USD", 100))
 			service := newTestService(store, "transaction-1")
-			command := MoneyCommand{WalletID: "wallet-1", Money: test.money, Idempotency: testIdempotency(test.name)}
+			command := MoneyCommand{OwnerID: testOwnerID, WalletID: "wallet-1", Money: test.money, Idempotency: testIdempotency(test.name)}
 			var err error
 			if test.operation == domain.TransactionDeposit {
 				_, err = service.Deposit(context.Background(), command)
@@ -337,6 +414,7 @@ func TestTransferIsAtomicAndLocksWalletsInStableOrder(t *testing.T) {
 	store := newMemoryStore(testWallet("wallet-b", "USD", 100), testWallet("wallet-a", "USD", 300))
 	service := newTestService(store, "transaction-1")
 	result, err := service.Transfer(context.Background(), TransferCommand{
+		OwnerID:        testOwnerID,
 		SourceWalletID: "wallet-b", DestinationWalletID: "wallet-a",
 		Money: domain.Money{Minor: 75, Currency: "USD"}, Idempotency: testIdempotency("transfer"),
 	})
@@ -364,27 +442,27 @@ func TestInvalidTransfersDoNotMutateWallets(t *testing.T) {
 	}{
 		{
 			name: "same wallet", source: testWallet("wallet-a", "USD", 100), destination: testWallet("wallet-b", "USD", 100),
-			command: TransferCommand{SourceWalletID: "wallet-a", DestinationWalletID: "wallet-a", Money: domain.Money{Minor: 1, Currency: "USD"}, Idempotency: testIdempotency("same")}, wantErr: domain.ErrSameWallet,
+			command: TransferCommand{OwnerID: testOwnerID, SourceWalletID: "wallet-a", DestinationWalletID: "wallet-a", Money: domain.Money{Minor: 1, Currency: "USD"}, Idempotency: testIdempotency("same")}, wantErr: domain.ErrSameWallet,
 		},
 		{
 			name: "negative amount", source: testWallet("wallet-a", "USD", 100), destination: testWallet("wallet-b", "USD", 100),
-			command: TransferCommand{SourceWalletID: "wallet-a", DestinationWalletID: "wallet-b", Money: domain.Money{Minor: -1, Currency: "USD"}, Idempotency: testIdempotency("negative")}, wantErr: domain.ErrInvalidAmount,
+			command: TransferCommand{OwnerID: testOwnerID, SourceWalletID: "wallet-a", DestinationWalletID: "wallet-b", Money: domain.Money{Minor: -1, Currency: "USD"}, Idempotency: testIdempotency("negative")}, wantErr: domain.ErrInvalidAmount,
 		},
 		{
 			name: "insufficient balance", source: testWallet("wallet-a", "USD", 100), destination: testWallet("wallet-b", "USD", 100),
-			command: TransferCommand{SourceWalletID: "wallet-a", DestinationWalletID: "wallet-b", Money: domain.Money{Minor: 101, Currency: "USD"}, Idempotency: testIdempotency("insufficient")}, wantErr: domain.ErrInsufficientFunds,
+			command: TransferCommand{OwnerID: testOwnerID, SourceWalletID: "wallet-a", DestinationWalletID: "wallet-b", Money: domain.Money{Minor: 101, Currency: "USD"}, Idempotency: testIdempotency("insufficient")}, wantErr: domain.ErrInsufficientFunds,
 		},
 		{
 			name: "destination currency mismatch", source: testWallet("wallet-a", "USD", 100), destination: testWallet("wallet-b", "EUR", 100),
-			command: TransferCommand{SourceWalletID: "wallet-a", DestinationWalletID: "wallet-b", Money: domain.Money{Minor: 10, Currency: "USD"}, Idempotency: testIdempotency("currency")}, wantErr: domain.ErrCurrencyMismatch,
+			command: TransferCommand{OwnerID: testOwnerID, SourceWalletID: "wallet-a", DestinationWalletID: "wallet-b", Money: domain.Money{Minor: 10, Currency: "USD"}, Idempotency: testIdempotency("currency")}, wantErr: domain.ErrCurrencyMismatch,
 		},
 		{
 			name: "destination overflow", source: testWallet("wallet-a", "USD", 100), destination: testWallet("wallet-b", "USD", math.MaxInt64),
-			command: TransferCommand{SourceWalletID: "wallet-a", DestinationWalletID: "wallet-b", Money: domain.Money{Minor: 1, Currency: "USD"}, Idempotency: testIdempotency("overflow")}, wantErr: domain.ErrAmountOverflow,
+			command: TransferCommand{OwnerID: testOwnerID, SourceWalletID: "wallet-a", DestinationWalletID: "wallet-b", Money: domain.Money{Minor: 1, Currency: "USD"}, Idempotency: testIdempotency("overflow")}, wantErr: domain.ErrAmountOverflow,
 		},
 		{
 			name: "missing destination", source: testWallet("wallet-a", "USD", 100), destination: testWallet("wallet-b", "USD", 100),
-			command: TransferCommand{SourceWalletID: "wallet-a", DestinationWalletID: "missing", Money: domain.Money{Minor: 1, Currency: "USD"}, Idempotency: testIdempotency("missing")}, wantErr: domain.ErrWalletNotFound,
+			command: TransferCommand{OwnerID: testOwnerID, SourceWalletID: "wallet-a", DestinationWalletID: "missing", Money: domain.Money{Minor: 1, Currency: "USD"}, Idempotency: testIdempotency("missing")}, wantErr: domain.ErrWalletNotFound,
 		},
 	}
 	for _, test := range tests {
@@ -409,7 +487,7 @@ func TestIdempotentDepositIsAppliedOnce(t *testing.T) {
 	t.Parallel()
 	store := newMemoryStore(testWallet("wallet-1", "USD", 100))
 	service := newTestService(store, "transaction-1", "unused-transaction")
-	command := MoneyCommand{WalletID: "wallet-1", Money: domain.Money{Minor: 50, Currency: "USD"}, Idempotency: testIdempotency("deposit")}
+	command := MoneyCommand{OwnerID: testOwnerID, WalletID: "wallet-1", Money: domain.Money{Minor: 50, Currency: "USD"}, Idempotency: testIdempotency("deposit")}
 	first, err := service.Deposit(context.Background(), command)
 	if err != nil {
 		t.Fatal(err)
@@ -432,10 +510,10 @@ func TestIdempotencyKeyCannotBeReusedWithDifferentPayload(t *testing.T) {
 	store := newMemoryStore(testWallet("wallet-1", "USD", 100))
 	service := newTestService(store, "transaction-1", "unused-transaction")
 	idempotency := testIdempotency("deposit")
-	if _, err := service.Deposit(context.Background(), MoneyCommand{WalletID: "wallet-1", Money: domain.Money{Minor: 50, Currency: "USD"}, Idempotency: idempotency}); err != nil {
+	if _, err := service.Deposit(context.Background(), MoneyCommand{OwnerID: testOwnerID, WalletID: "wallet-1", Money: domain.Money{Minor: 50, Currency: "USD"}, Idempotency: idempotency}); err != nil {
 		t.Fatal(err)
 	}
-	_, err := service.Deposit(context.Background(), MoneyCommand{WalletID: "wallet-1", Money: domain.Money{Minor: 51, Currency: "USD"}, Idempotency: idempotency})
+	_, err := service.Deposit(context.Background(), MoneyCommand{OwnerID: testOwnerID, WalletID: "wallet-1", Money: domain.Money{Minor: 51, Currency: "USD"}, Idempotency: idempotency})
 	if !errors.Is(err, domain.ErrIdempotencyConflict) {
 		t.Fatalf("expected idempotency conflict, got %v", err)
 	}
@@ -451,6 +529,7 @@ func TestPersistenceFailuresRollBackEntireOperation(t *testing.T) {
 			store.failMethod = failMethod
 			service := newTestService(store, "transaction-1")
 			_, err := service.Transfer(context.Background(), TransferCommand{
+				OwnerID:        testOwnerID,
 				SourceWalletID: "wallet-a", DestinationWalletID: "wallet-b",
 				Money: domain.Money{Minor: 25, Currency: "USD"}, Idempotency: testIdempotency(failMethod),
 			})
@@ -472,7 +551,7 @@ func TestCancelledContextStopsBeforeTransaction(t *testing.T) {
 	service := newTestService(store, "transaction-1")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := service.Deposit(ctx, MoneyCommand{WalletID: "wallet-1", Money: domain.Money{Minor: 1, Currency: "USD"}, Idempotency: testIdempotency("cancelled")})
+	_, err := service.Deposit(ctx, MoneyCommand{OwnerID: testOwnerID, WalletID: "wallet-1", Money: domain.Money{Minor: 1, Currency: "USD"}, Idempotency: testIdempotency("cancelled")})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context cancellation, got %v", err)
 	}
@@ -483,7 +562,7 @@ func TestListHistoryValidatesLimit(t *testing.T) {
 	t.Parallel()
 	service := newTestService(newMemoryStore(testWallet("wallet-1", "USD", 0)), "unused")
 	for _, limit := range []int{-1, 0, 101} {
-		if _, err := service.ListHistory(context.Background(), "wallet-1", 0, limit, nil); err == nil {
+		if _, err := service.ListHistory(context.Background(), testOwnerID, "wallet-1", 0, limit, nil); err == nil {
 			t.Fatalf("expected limit %d to be rejected", limit)
 		}
 	}
@@ -497,9 +576,9 @@ func TestCreateWalletInputAndDependencyFailures(t *testing.T) {
 		ids     *sequenceIDs
 		wantErr error
 	}{
-		{name: "unsupported currency", command: CreateWalletCommand{Currency: "BTC", Idempotency: testIdempotency("key")}, ids: &sequenceIDs{values: []string{"wallet"}}, wantErr: domain.ErrInvalidCurrency},
-		{name: "missing idempotency", command: CreateWalletCommand{Currency: "USD"}, ids: &sequenceIDs{values: []string{"wallet"}}, wantErr: errors.New("idempotency")},
-		{name: "ID generator failure", command: CreateWalletCommand{Currency: "USD", Idempotency: testIdempotency("key")}, ids: &sequenceIDs{err: errInjected}, wantErr: errInjected},
+		{name: "unsupported currency", command: CreateWalletCommand{OwnerID: testOwnerID, Currency: "BTC", Idempotency: testIdempotency("key")}, ids: &sequenceIDs{values: []string{"wallet"}}, wantErr: domain.ErrInvalidCurrency},
+		{name: "missing idempotency", command: CreateWalletCommand{OwnerID: testOwnerID, Currency: "USD"}, ids: &sequenceIDs{values: []string{"wallet"}}, wantErr: errors.New("idempotency")},
+		{name: "ID generator failure", command: CreateWalletCommand{OwnerID: testOwnerID, Currency: "USD", Idempotency: testIdempotency("key")}, ids: &sequenceIDs{err: errInjected}, wantErr: errInjected},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -526,10 +605,10 @@ func newTestService(store Store, ids ...string) *Service {
 }
 
 func testWallet(id, currency string, balance int64) domain.Wallet {
-	return domain.Wallet{ID: id, Currency: currency, BalanceMinor: balance, Status: domain.WalletActive, Version: 1}
+	return domain.Wallet{ID: id, OwnerID: testOwnerID, Currency: currency, BalanceMinor: balance, Status: domain.WalletActive, Version: 1}
 }
 
-func testIdempotency(key string) Idempotency { return Idempotency{Scope: "test", Key: key} }
+func testIdempotency(key string) Idempotency { return Idempotency{Key: key} }
 
 func assertUnchangedWallet(t *testing.T, store *memoryStore, walletID string, wantBalance int64) {
 	t.Helper()

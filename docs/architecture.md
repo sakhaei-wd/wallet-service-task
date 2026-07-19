@@ -56,6 +56,8 @@ The following must be true after every commit:
 4. A transfer cannot address the same wallet twice.
 5. Every financial transaction has its corresponding immutable wallet ledger effects.
 6. A given idempotency key can affect balances no more than once within its caller scope.
+7. Every wallet has exactly one external owner, and one owner can have at most one wallet.
+8. Only the owner may read or mutate a wallet; a transfer authorizes its source owner and may target another owner's wallet.
 
 The domain checks these rules for useful errors. Database checks independently reject negative balances, nonpositive amounts, invalid participants, and ledger arithmetic that does not reconcile with its before/after values.
 
@@ -73,7 +75,7 @@ Deposits and withdrawals currently represent external money entering or leaving 
 
 Mutation requests reserve `(scope, key)` inside the same database transaction as their resource. A SHA-256 request fingerprint prevents a key from being reused with different inputs. Concurrent requests using the same key are resolved by the primary key on `idempotency_records`; the loser reads and returns the already committed resource.
 
-The demo obtains `scope` from `X-Client-ID`, defaulting to `public`. A production authentication adapter must derive it from the authenticated principal so callers cannot choose another caller's namespace.
+The application derives `scope` from the required wallet owner UUID rather than accepting a client-selected namespace. The HTTP adapter currently receives that principal through `X-User-ID`, representing a trusted upstream identity assertion for the assignment. A production authentication adapter must validate credentials and inject the principal internally.
 
 ## Scaling path
 

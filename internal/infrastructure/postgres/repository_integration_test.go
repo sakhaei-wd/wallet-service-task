@@ -41,7 +41,7 @@ func TestRepositoryWalletLifecycle(t *testing.T) {
 	cleanupIntegrationData(t, store, "", id)
 	repository := &repository{executor: store.Pool()}
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	wallet, err := domain.NewWallet(id, "USD", now)
+	wallet, err := domain.NewWallet(id, integrationUUID(t), "USD", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,6 +77,31 @@ func TestRepositoryWalletLifecycle(t *testing.T) {
 	}
 }
 
+func TestDatabaseEnforcesOneWalletPerOwner(t *testing.T) {
+	store := openIntegrationStore(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	repository := &repository{executor: store.Pool()}
+	ownerID, firstID, secondID := integrationUUID(t), integrationUUID(t), integrationUUID(t)
+	cleanupIntegrationData(t, store, "", firstID, secondID)
+	now := time.Now().UTC()
+	first, _ := domain.NewWallet(firstID, ownerID, "USD", now)
+	second, _ := domain.NewWallet(secondID, ownerID, "USD", now)
+	if err := repository.CreateWallet(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.CreateWallet(ctx, second); !errors.Is(err, domain.ErrOwnerHasWallet) {
+		t.Fatalf("expected owner wallet conflict, got %v", err)
+	}
+	var count int
+	if err := store.Pool().QueryRow(ctx, "SELECT COUNT(*) FROM wallets WHERE owner_id = $1", ownerID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("expected one wallet for owner, got %d", count)
+	}
+}
+
 func TestDatabaseRejectsInvalidWalletState(t *testing.T) {
 	store := openIntegrationStore(t)
 	repository := &repository{executor: store.Pool()}
@@ -92,7 +117,7 @@ func TestDatabaseRejectsInvalidWalletState(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			wallet, _ := domain.NewWallet(integrationUUID(t), "USD", time.Now().UTC())
+			wallet, _ := domain.NewWallet(integrationUUID(t), integrationUUID(t), "USD", time.Now().UTC())
 			test.mutate(&wallet)
 			err := repository.CreateWallet(ctx, wallet)
 			var postgresError *pgconn.PgError
@@ -111,7 +136,7 @@ func TestWithinTransactionRollsBackAllFinancialWrites(t *testing.T) {
 	cleanupIntegrationData(t, store, "rollback-test", walletID)
 	repository := &repository{executor: store.Pool()}
 	now := time.Now().UTC()
-	wallet, _ := domain.NewWallet(walletID, "USD", now)
+	wallet, _ := domain.NewWallet(walletID, integrationUUID(t), "USD", now)
 	wallet.BalanceMinor = 100
 	if err := repository.CreateWallet(ctx, wallet); err != nil {
 		t.Fatal(err)
@@ -177,11 +202,11 @@ func TestConstraintFailureRollsBackEarlierWrites(t *testing.T) {
 	cleanupIntegrationData(t, store, "", firstID, invalidID)
 	now := time.Now().UTC()
 	err := store.WithinTransaction(ctx, func(ctx context.Context, tx application.TransactionStore) error {
-		first, _ := domain.NewWallet(firstID, "USD", now)
+		first, _ := domain.NewWallet(firstID, integrationUUID(t), "USD", now)
 		if err := tx.CreateWallet(ctx, first); err != nil {
 			return err
 		}
-		invalid, _ := domain.NewWallet(invalidID, "USD", now)
+		invalid, _ := domain.NewWallet(invalidID, integrationUUID(t), "USD", now)
 		invalid.BalanceMinor = -1
 		return tx.CreateWallet(ctx, invalid)
 	})
@@ -202,7 +227,7 @@ func TestDatabaseRejectsInvalidLedgerArithmetic(t *testing.T) {
 	cleanupIntegrationData(t, store, "", walletID)
 	repository := &repository{executor: store.Pool()}
 	now := time.Now().UTC()
-	wallet, _ := domain.NewWallet(walletID, "USD", now)
+	wallet, _ := domain.NewWallet(walletID, integrationUUID(t), "USD", now)
 	if err := repository.CreateWallet(ctx, wallet); err != nil {
 		t.Fatal(err)
 	}
@@ -235,20 +260,20 @@ func TestHistoryRepositoryPaginationAndFiltering(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	service := application.NewService(store, identity.UUIDGenerator{}, clock.System{})
-	scope := fmt.Sprintf("history-%d", time.Now().UnixNano())
-	wallet, _, err := service.CreateWallet(ctx, application.CreateWalletCommand{Currency: "USD", Idempotency: application.Idempotency{Scope: scope, Key: "create"}})
+	ownerID := integrationUUID(t)
+	wallet, _, err := service.CreateWallet(ctx, application.CreateWalletCommand{OwnerID: ownerID, Currency: "USD", Idempotency: application.Idempotency{Key: "create"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	cleanupIntegrationData(t, store, scope, wallet.ID)
+	cleanupIntegrationData(t, store, ownerID, wallet.ID)
 	for index, amount := range []int64{100, 200, 300} {
 		money, _ := domain.NewMoney(amount, "USD")
-		if _, err := service.Deposit(ctx, application.MoneyCommand{WalletID: wallet.ID, Money: money, Idempotency: application.Idempotency{Scope: scope, Key: fmt.Sprintf("deposit-%d", index)}}); err != nil {
+		if _, err := service.Deposit(ctx, application.MoneyCommand{OwnerID: ownerID, WalletID: wallet.ID, Money: money, Idempotency: application.Idempotency{Key: fmt.Sprintf("deposit-%d", index)}}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	withdrawal, _ := domain.NewMoney(50, "USD")
-	if _, err := service.Withdraw(ctx, application.MoneyCommand{WalletID: wallet.ID, Money: withdrawal, Idempotency: application.Idempotency{Scope: scope, Key: "withdraw"}}); err != nil {
+	if _, err := service.Withdraw(ctx, application.MoneyCommand{OwnerID: ownerID, WalletID: wallet.ID, Money: withdrawal, Idempotency: application.Idempotency{Key: "withdraw"}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -285,14 +310,14 @@ func TestConcurrentIdempotentDepositIsAppliedOnce(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	service := application.NewService(store, identity.UUIDGenerator{}, clock.System{})
-	scope := fmt.Sprintf("idempotency-%d", time.Now().UnixNano())
-	wallet, _, err := service.CreateWallet(ctx, application.CreateWalletCommand{Currency: "USD", Idempotency: application.Idempotency{Scope: scope, Key: "create"}})
+	ownerID := integrationUUID(t)
+	wallet, _, err := service.CreateWallet(ctx, application.CreateWalletCommand{OwnerID: ownerID, Currency: "USD", Idempotency: application.Idempotency{Key: "create"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	cleanupIntegrationData(t, store, scope, wallet.ID)
+	cleanupIntegrationData(t, store, ownerID, wallet.ID)
 	money, _ := domain.NewMoney(100, "USD")
-	command := application.MoneyCommand{WalletID: wallet.ID, Money: money, Idempotency: application.Idempotency{Scope: scope, Key: "same-deposit"}}
+	command := application.MoneyCommand{OwnerID: ownerID, WalletID: wallet.ID, Money: money, Idempotency: application.Idempotency{Key: "same-deposit"}}
 
 	const requestCount = 20
 	results := make(chan domain.OperationResult, requestCount)
@@ -323,14 +348,14 @@ func TestConcurrentIdempotentDepositIsAppliedOnce(t *testing.T) {
 	if len(transactionIDs) != 1 {
 		t.Fatalf("expected one transaction ID, got %v", transactionIDs)
 	}
-	updated, err := service.GetWallet(ctx, wallet.ID)
+	updated, err := service.GetWallet(ctx, ownerID, wallet.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if updated.BalanceMinor != 100 {
 		t.Fatalf("deposit was applied more than once: balance=%d", updated.BalanceMinor)
 	}
-	history, err := service.ListHistory(ctx, wallet.ID, 0, 100, nil)
+	history, err := service.ListHistory(ctx, ownerID, wallet.ID, 0, 100, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

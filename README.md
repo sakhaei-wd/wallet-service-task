@@ -9,6 +9,7 @@ The implementation is designed as a backend engineering assignment that demonstr
 The service provides the following capabilities:
 
 - Create a single-currency wallet with a zero balance.
+- Associate each wallet with one external user and enforce at most one wallet per owner.
 - Deposit funds into a wallet.
 - Withdraw funds without allowing an overdraft.
 - Transfer funds atomically between two wallets.
@@ -329,8 +330,9 @@ The complete contract is available in [api/openapi.yaml](api/openapi.yaml).
 ### Request conventions
 
 - Requests with JSON bodies require `Content-Type: application/json`.
+- Wallet and transaction endpoints require `X-User-ID` containing the caller's UUID. In this assignment it represents a principal asserted by a trusted upstream; production must derive it from verified credentials.
 - Mutation endpoints require an `Idempotency-Key` header of at most 128 characters.
-- `X-Client-ID` optionally scopes idempotency keys; it defaults to `public` in this assignment.
+- Idempotency keys are scoped internally by the owner UUID; clients cannot select another idempotency namespace.
 - Amounts are decimal strings, not JSON numbers, to avoid floating-point interpretation.
 - Supported currencies are `USD`, `EUR`, `GBP`, and `JPY`.
 - Mutation responses return `201 Created`; a successful idempotent replay returns `200 OK` with the original resource.
@@ -341,7 +343,7 @@ The complete contract is available in [api/openapi.yaml](api/openapi.yaml).
 POST /v1/wallets
 Content-Type: application/json
 Idempotency-Key: create-wallet-001
-X-Client-ID: example-client
+X-User-ID: 44444444-4444-4444-8444-444444444444
 
 {
   "currency": "USD"
@@ -354,6 +356,7 @@ X-Client-ID: example-client
 POST /v1/wallets/{walletId}/deposits
 Content-Type: application/json
 Idempotency-Key: deposit-001
+X-User-ID: 44444444-4444-4444-8444-444444444444
 
 {
   "amount": "100.00",
@@ -369,6 +372,7 @@ Use `/withdrawals` with the same request shape for a withdrawal.
 POST /v1/transfers
 Content-Type: application/json
 Idempotency-Key: transfer-001
+X-User-ID: 44444444-4444-4444-8444-444444444444
 
 {
   "sourceWalletId": "11111111-1111-4111-8111-111111111111",
@@ -382,6 +386,7 @@ Idempotency-Key: transfer-001
 
 ```http
 GET /v1/wallets/{walletId}/transactions?limit=50&cursor={opaqueCursor}&type=TRANSFER
+X-User-ID: 44444444-4444-4444-8444-444444444444
 ```
 
 - `limit` defaults to 50 and must be between 1 and 100.
@@ -409,6 +414,7 @@ Common statuses:
 | Status | Meaning |
 |---:|---|
 | `400` | Malformed request, invalid UUID, cursor, or query parameter |
+| `403` | The asserted user does not own or participate in the requested resource |
 | `404` | Wallet, transaction, or route not found |
 | `409` | Inactive wallet or idempotency-key conflict |
 | `413` | Request body exceeds 1 MiB |
@@ -419,13 +425,15 @@ Common statuses:
 ## Assumptions
 
 - Each wallet holds exactly one currency.
+- Each externally managed user can own at most one wallet; `wallets.owner_id` is required and unique.
+- Migration `002_wallet_ownership.sql` assigns each pre-existing wallet a synthetic owner equal to its wallet UUID so the upgrade is non-destructive. A real legacy deployment must replace that backfill with an authoritative user-to-wallet mapping before serving traffic.
 - Wallets are created with a zero balance; initial funding must be a deposit so it appears in history.
 - Monetary values are stored as signed 64-bit minor units and never as floating point.
 - USD, EUR, and GBP use two fractional digits; JPY uses none.
 - Transaction history contains successfully committed financial operations. Rejected requests are operational/security events, not ledger entries.
 - Deposits and withdrawals represent money crossing the service boundary; external settlement is outside the assignment.
 - The database is the authoritative consistency boundary for wallet balances and history.
-- Authentication, wallet ownership, and authorization are outside the stated assignment scope.
+- The user registry and credential authentication are outside the assignment scope. Wallet ownership is modeled and enforced; `X-User-ID` stands in for a trusted authenticated principal.
 
 ## Design decisions
 
@@ -451,7 +459,11 @@ The service uses `pgx` rather than an ORM. SQL behavior, row locking, transactio
 
 ### Idempotent mutations
 
-The `(scope, key)` pair is unique in PostgreSQL. Each record stores a SHA-256 request fingerprint and resource ID. Replaying the same request returns the existing resource; changing the payload under the same key returns `409 Conflict`.
+The `(owner_id, key)` pair is unique in PostgreSQL's idempotency records. Each record stores a SHA-256 request fingerprint and resource ID. Replaying the same request returns the existing resource; changing the payload under the same key returns `409 Conflict`.
+
+### Explicit wallet ownership
+
+`wallets.owner_id` is non-null and unique, so the database—not only application code—enforces one wallet per external user. The application checks ownership for wallet reads, deposits, withdrawals, history, and transfer sources. Transaction details are visible only to an owner participating in that transaction.
 
 ### Cursor pagination
 
@@ -463,8 +475,8 @@ The repository includes a dedicated migration executable with an advisory lock a
 
 ## Current limitations
 
-- There is no authentication, authorization, wallet ownership, or tenant model.
-- `X-Client-ID` is accepted from the request and must not be trusted as identity in production.
+- There is no credential authentication or tenant model. `X-User-ID` is an assignment-level trusted-upstream contract and must not be accepted directly from an untrusted public client.
+- Ownership authorization exists, but it is only as trustworthy as the upstream component asserting `X-User-ID`.
 - Currency support is intentionally limited to USD, EUR, GBP, and JPY.
 - Deposits and withdrawals are not integrated with an external payment or settlement provider.
 - Deposits and withdrawals have wallet ledger entries but do not yet post against internal clearing accounts for full double-entry accounting.
@@ -478,8 +490,8 @@ The repository includes a dedicated migration executable with an advisory lock a
 
 ## Future improvements
 
-- Add authentication and derive wallet ownership and idempotency scope from the authenticated principal.
-- Add authorization policies for wallet reads, transfers, deposits, and administrative operations.
+- Add OAuth2/OIDC or equivalent authentication middleware and derive `X-User-ID` internally from verified claims rather than a public header.
+- Extend the existing ownership checks with roles and administrative authorization policies.
 - Introduce internal clearing and settlement accounts for full double-entry bookkeeping.
 - Integrate deposits and withdrawals with payment-provider authorization, settlement, and reconciliation workflows.
 - Add a transactional outbox for notifications, analytics, and downstream integrations.

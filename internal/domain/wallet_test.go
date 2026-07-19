@@ -12,7 +12,7 @@ import (
 func TestWalletDebitNeverMakesBalanceNegative(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	wallet, err := domain.NewWallet("wallet", "USD", now)
+	wallet, err := domain.NewWallet("wallet", "owner", "USD", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -26,6 +26,14 @@ func TestWalletDebitNeverMakesBalanceNegative(t *testing.T) {
 	}
 	if wallet.BalanceMinor != 100 {
 		t.Fatalf("failed debit changed balance to %d", wallet.BalanceMinor)
+	}
+}
+
+func TestNewWalletRequiresOwner(t *testing.T) {
+	t.Parallel()
+	_, err := domain.NewWallet("wallet", "", "USD", time.Now())
+	if !errors.Is(err, domain.ErrInvalidOwner) {
+		t.Fatalf("expected invalid owner, got %v", err)
 	}
 }
 

@@ -12,6 +12,7 @@ const (
 
 type Wallet struct {
 	ID           string
+	OwnerID      string
 	Currency     string
 	BalanceMinor int64
 	Status       WalletStatus
@@ -20,13 +21,17 @@ type Wallet struct {
 	UpdatedAt    time.Time
 }
 
-func NewWallet(id, currency string, now time.Time) (Wallet, error) {
+func NewWallet(id, ownerID, currency string, now time.Time) (Wallet, error) {
+	if ownerID == "" {
+		return Wallet{}, ErrInvalidOwner
+	}
 	currency, err := NormalizeCurrency(currency)
 	if err != nil {
 		return Wallet{}, err
 	}
 	return Wallet{
 		ID:        id,
+		OwnerID:   ownerID,
 		Currency:  currency,
 		Status:    WalletActive,
 		Version:   1,

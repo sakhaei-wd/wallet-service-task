@@ -13,4 +13,7 @@ var (
 	ErrAmountOverflow      = errors.New("amount exceeds the supported range")
 	ErrTransactionNotFound = errors.New("transaction not found")
 	ErrIdempotencyConflict = errors.New("idempotency key was used with a different request")
+	ErrInvalidOwner        = errors.New("owner ID is required")
+	ErrWalletAccessDenied  = errors.New("wallet access denied")
+	ErrOwnerHasWallet      = errors.New("owner already has a wallet")
 )
