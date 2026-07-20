@@ -220,3 +220,76 @@ Requirements:
 - Update the README.md with instructions for generating and accessing the Swagger documentation.
 
 Do not modify the API design unless required for documentation consistency.
+
+---
+
+# Prompt 9 – Project Diagrams 
+
+Generate professional architecture diagrams for the project.
+
+Requirements:
+
+- Use Mermaid diagrams only.
+- The diagrams must render correctly in GitHub Markdown.
+- Keep them simple, readable, and production-quality.
+- Reflect the current implementation exactly.
+- Do not invent components that do not exist.
+
+Generate the following diagrams:
+
+1. High-Level System Architecture
+   - Client
+   - REST API
+   - Service Layer
+   - Repository Layer
+   - PostgreSQL
+
+2. Request Flow
+   Show how a request travels through:
+   HTTP Request
+   → Router
+   → Handler
+   → Service
+   → Repository
+   → Database
+   → Response
+
+3. Entity Relationship Diagram (ERD)
+   Include:
+   - Wallet
+   - Transaction
+   - Relationships
+   - Primary Keys
+   - Foreign Keys
+
+4. Sequence Diagram
+   For a successful Transfer operation.
+   Include:
+   Client
+   API
+   Service
+   Database Transaction
+   Transaction History
+
+5. Package / Layer Diagram
+   Show dependencies between:
+   - cmd
+   - internal/handler
+   - internal/service
+   - internal/repository
+   - internal/domain
+   - internal/config
+   - database
+
+6. Deployment Diagram
+   Show the local development deployment using:
+   - Client
+   - REST API
+   - PostgreSQL
+   - Docker (if applicable)
+
+Place all diagrams in docs/diagrams.md.
+
+Update README.md with a "Project Diagrams" section linking to the diagrams.
+
+Ensure every diagram matches the implementation exactly.

@@ -96,6 +96,10 @@ Database constraints provide a final integrity layer for:
 
 See [docs/architecture.md](docs/architecture.md) for detailed transaction flows, invariants, isolation choices, and scaling considerations.
 
+## Project Diagrams
+
+See [docs/diagrams.md](docs/diagrams.md) for GitHub-rendered Mermaid diagrams covering the high-level architecture, request flow, database relationships, successful transfer sequence, package dependencies, and local Docker Compose deployment.
+
 ## Folder structure
 
 ```text
@@ -110,7 +114,8 @@ See [docs/architecture.md](docs/architecture.md) for detailed transaction flows,
 │   ├── migrate/main.go                 Migration executable
 │   └── server/main.go                  Application composition root
 ├── docs/
-│   └── architecture.md                 Architecture and consistency notes
+│   ├── architecture.md                 Architecture and consistency notes
+│   └── diagrams.md                     Mermaid architecture diagrams
 ├── internal/
 │   ├── application/
 │   │   ├── commands.go                 Application command DTOs
