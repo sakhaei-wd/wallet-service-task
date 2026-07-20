@@ -53,7 +53,7 @@ func run(logger *slog.Logger) error {
 	handler := httpapi.NewHandler(service, logger)
 	server := &http.Server{
 		Addr:              configuration.HTTPAddress,
-		Handler:           handler.Routes(configuration.RequestTimeout, idGenerator),
+		Handler:           handler.Routes(configuration.RequestTimeout, idGenerator, configuration.SwaggerEnabled),
 		ReadHeaderTimeout: configuration.ReadHeaderTimeout,
 		ReadTimeout:       configuration.ReadTimeout,
 		WriteTimeout:      configuration.WriteTimeout,

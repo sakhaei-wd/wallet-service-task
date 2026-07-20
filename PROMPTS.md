@@ -198,3 +198,25 @@ After listing the required changes, implement them while preserving the existing
 Update any affected documentation and tests so the project remains internally consistent.
 
 Finally, summarize whether the project can be considered a complete solution for the assignment after the changes are applied.
+
+---
+
+# Prompt 8 – API Documentation (Swagger / OpenAPI)
+
+Generate OpenAPI (Swagger) documentation for the project.
+
+Requirements:
+
+- Generate production-quality API documentation.
+- Use the standard Swagger/OpenAPI tooling for Go.
+- Document every REST endpoint.
+- Include request and response schemas.
+- Document validation rules.
+- Document all possible HTTP status codes.
+- Include example requests and responses.
+- Document error response format consistently.
+- Keep the documentation synchronized with the current implementation.
+- Expose Swagger UI through an endpoint suitable for local development.
+- Update the README.md with instructions for generating and accessing the Swagger documentation.
+
+Do not modify the API design unless required for documentation consistency.

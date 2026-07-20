@@ -469,13 +469,64 @@ func TestHealthAndMiddlewareBehavior(t *testing.T) {
 		}
 		ids := identity.UUIDGenerator{}
 		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-		handler := NewHandler(service, logger).Routes(5*time.Millisecond, ids)
+		handler := NewHandler(service, logger).Routes(5*time.Millisecond, ids, true)
 		response := performRequest(handler, http.MethodGet, "/v1/wallets/"+testWalletID, "", "", "")
 		if response.Code != http.StatusServiceUnavailable {
 			t.Fatalf("expected 503, got %d: %s", response.Code, response.Body.String())
 		}
 		assertJSONContains(t, response, `"code":"REQUEST_CANCELLED"`)
 	})
+}
+
+func TestDocumentationRoutes(t *testing.T) {
+	t.Parallel()
+	service := defaultStubService()
+	handler := testAPIHandler(service)
+
+	tests := []struct {
+		name        string
+		path        string
+		status      int
+		contentType string
+		contains    string
+	}{
+		{name: "YAML source", path: "/openapi.yaml", status: http.StatusOK, contentType: "application/yaml", contains: "openapi: 3.1.0"},
+		{name: "generated JSON", path: "/openapi.json", status: http.StatusOK, contentType: "application/json", contains: `"openapi": "3.1.0"`},
+		{name: "Swagger UI", path: "/docs/", status: http.StatusOK, contentType: "text/html", contains: "Swagger UI"},
+		{name: "embedded Swagger UI asset", path: "/docs/swagger-ui.css", status: http.StatusOK, contentType: "text/css", contains: ".swagger-ui"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			response := performRequest(handler, http.MethodGet, test.path, "", "", "")
+			if response.Code != test.status {
+				t.Fatalf("expected %d, got %d: %s", test.status, response.Code, response.Body.String())
+			}
+			if !strings.HasPrefix(response.Header().Get("Content-Type"), test.contentType) {
+				t.Fatalf("expected content type %s, got %s", test.contentType, response.Header().Get("Content-Type"))
+			}
+			if !strings.Contains(response.Body.String(), test.contains) {
+				t.Fatalf("response did not contain %q", test.contains)
+			}
+		})
+	}
+
+	redirect := performRequest(handler, http.MethodGet, "/docs", "", "", "")
+	if redirect.Code != http.StatusTemporaryRedirect || redirect.Header().Get("Location") != "/docs/" {
+		t.Fatalf("unexpected docs redirect: status=%d location=%q", redirect.Code, redirect.Header().Get("Location"))
+	}
+	methodNotAllowed := performRequest(handler, http.MethodPost, "/openapi.json", "", "", "")
+	if methodNotAllowed.Code != http.StatusMethodNotAllowed || methodNotAllowed.Header().Get("Allow") != http.MethodGet {
+		t.Fatalf("unexpected documentation method response: status=%d allow=%q", methodNotAllowed.Code, methodNotAllowed.Header().Get("Allow"))
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	disabled := NewHandler(service, logger).Routes(time.Second, identity.UUIDGenerator{}, false)
+	for _, path := range []string{"/docs", "/docs/", "/openapi.yaml", "/openapi.json"} {
+		response := performRequest(disabled, http.MethodGet, path, "", "", "")
+		if response.Code != http.StatusNotFound {
+			t.Errorf("expected disabled %s to return 404, got %d", path, response.Code)
+		}
+	}
 }
 
 func testHandler() http.Handler {
@@ -485,7 +536,7 @@ func testHandler() http.Handler {
 func testAPIHandler(service walletService) http.Handler {
 	ids := identity.UUIDGenerator{}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return NewHandler(service, logger).Routes(time.Second, ids)
+	return NewHandler(service, logger).Routes(time.Second, ids, true)
 }
 
 func defaultStubService() *stubService {

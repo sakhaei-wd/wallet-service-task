@@ -14,6 +14,7 @@ type Config struct {
 	DatabaseURL       string
 	DatabaseMaxConns  int32
 	RunMigrations     bool
+	SwaggerEnabled    bool
 	ShutdownTimeout   time.Duration
 	RequestTimeout    time.Duration
 	ReadHeaderTimeout time.Duration
@@ -23,11 +24,16 @@ type Config struct {
 }
 
 func Load() (Config, error) {
+	environmentName := environment("APP_ENV", "development")
 	maxConnections, err := parseEnvironmentInt("DATABASE_MAX_CONNECTIONS", 20)
 	if err != nil {
 		return Config{}, err
 	}
 	runMigrations, err := parseEnvironmentBool("RUN_MIGRATIONS", false)
+	if err != nil {
+		return Config{}, err
+	}
+	swaggerEnabled, err := parseEnvironmentBool("SWAGGER_ENABLED", environmentName != "production")
 	if err != nil {
 		return Config{}, err
 	}
@@ -56,11 +62,12 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	configuration := Config{
-		Environment:       environment("APP_ENV", "development"),
+		Environment:       environmentName,
 		HTTPAddress:       environment("HTTP_ADDRESS", ":8080"),
 		DatabaseURL:       os.Getenv("DATABASE_URL"),
 		DatabaseMaxConns:  int32(maxConnections),
 		RunMigrations:     runMigrations,
+		SwaggerEnabled:    swaggerEnabled,
 		ShutdownTimeout:   shutdownTimeout,
 		RequestTimeout:    requestTimeout,
 		ReadHeaderTimeout: readHeaderTimeout,

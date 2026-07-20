@@ -34,6 +34,7 @@ jobs:
           cache: true
       - run: go mod download
       - run: gofmt -w . && git diff --exit-code
+      - run: go generate ./api && git diff --exit-code -- api/openapi.json
       - run: go vet ./...
       - run: go test -race -coverprofile=coverage.out ./...
-      - run: go build ./cmd/server ./cmd/migrate
+      - run: go build ./cmd/server ./cmd/migrate ./cmd/openapi

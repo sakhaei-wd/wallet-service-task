@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	apiDocs "walletservice/api"
 	"walletservice/internal/application"
 	"walletservice/internal/domain"
 	"walletservice/internal/platform/identity"
@@ -42,7 +43,7 @@ func NewHandler(service walletService, logger *slog.Logger) *Handler {
 	return &Handler{service: service, logger: logger}
 }
 
-func (h *Handler) Routes(requestTimeout time.Duration, ids identity.Generator) http.Handler {
+func (h *Handler) Routes(requestTimeout time.Duration, ids identity.Generator, swaggerEnabled bool) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health/live", h.liveness)
 	mux.HandleFunc("GET /health/ready", h.readiness)
@@ -53,6 +54,9 @@ func (h *Handler) Routes(requestTimeout time.Duration, ids identity.Generator) h
 	mux.HandleFunc("GET /v1/wallets/{walletID}/transactions", h.listHistory)
 	mux.HandleFunc("GET /v1/transactions/{transactionID}", h.getTransaction)
 	mux.HandleFunc("POST /v1/transfers", h.transfer)
+	if swaggerEnabled {
+		registerDocumentationRoutes(mux)
+	}
 	mux.HandleFunc("/health/live", methodNotAllowed(http.MethodGet))
 	mux.HandleFunc("/health/ready", methodNotAllowed(http.MethodGet))
 	mux.HandleFunc("/v1/wallets", methodNotAllowed(http.MethodPost))
@@ -64,6 +68,19 @@ func (h *Handler) Routes(requestTimeout time.Duration, ids identity.Generator) h
 	mux.HandleFunc("/v1/transfers", methodNotAllowed(http.MethodPost))
 	mux.HandleFunc("/", notFound)
 	return middlewareChain(mux, h.logger, requestTimeout, ids)
+}
+
+func registerDocumentationRoutes(mux *http.ServeMux) {
+	mux.Handle("GET /openapi.yaml", apiDocs.Source())
+	mux.Handle("GET /openapi.json", apiDocs.Generated())
+	mux.HandleFunc("GET /docs", func(writer http.ResponseWriter, request *http.Request) {
+		http.Redirect(writer, request, "/docs/", http.StatusTemporaryRedirect)
+	})
+	mux.Handle("GET /docs/", apiDocs.SwaggerUI())
+	mux.HandleFunc("/openapi.yaml", methodNotAllowed(http.MethodGet))
+	mux.HandleFunc("/openapi.json", methodNotAllowed(http.MethodGet))
+	mux.HandleFunc("/docs", methodNotAllowed(http.MethodGet))
+	mux.Handle("/docs/", methodNotAllowed(http.MethodGet))
 }
 
 func (h *Handler) createWallet(writer http.ResponseWriter, request *http.Request) {

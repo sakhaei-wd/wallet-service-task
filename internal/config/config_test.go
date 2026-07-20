@@ -11,7 +11,7 @@ func TestLoadValidConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if configuration.DatabaseMaxConns != 20 || !configuration.RunMigrations || configuration.HTTPAddress != ":9090" {
+	if configuration.DatabaseMaxConns != 20 || !configuration.RunMigrations || !configuration.SwaggerEnabled || configuration.HTTPAddress != ":9090" {
 		t.Fatalf("unexpected configuration: %+v", configuration)
 	}
 }
@@ -27,6 +27,7 @@ func TestLoadRejectsInvalidEnvironment(t *testing.T) {
 		{name: "invalid connection count", variable: "DATABASE_MAX_CONNECTIONS", value: "many", message: "must be an integer"},
 		{name: "too few connections", variable: "DATABASE_MAX_CONNECTIONS", value: "1", message: "must be at least 2"},
 		{name: "invalid boolean", variable: "RUN_MIGRATIONS", value: "sometimes", message: "must be a boolean"},
+		{name: "invalid Swagger boolean", variable: "SWAGGER_ENABLED", value: "sometimes", message: "must be a boolean"},
 		{name: "invalid duration", variable: "REQUEST_TIMEOUT", value: "soon", message: "must be a duration"},
 		{name: "nonpositive duration", variable: "HTTP_IDLE_TIMEOUT", value: "0s", message: "must be greater than zero"},
 	}
@@ -39,6 +40,20 @@ func TestLoadRejectsInvalidEnvironment(t *testing.T) {
 				t.Fatalf("expected error containing %q, got %v", test.message, err)
 			}
 		})
+	}
+}
+
+func TestSwaggerDefaultsOffInProduction(t *testing.T) {
+	setValidEnvironment(t)
+	t.Setenv("APP_ENV", "production")
+	t.Setenv("RUN_MIGRATIONS", "false")
+	t.Setenv("SWAGGER_ENABLED", "")
+	configuration, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if configuration.SwaggerEnabled {
+		t.Fatal("expected Swagger UI to default off in production")
 	}
 }
 
@@ -58,6 +73,7 @@ func setValidEnvironment(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://test")
 	t.Setenv("DATABASE_MAX_CONNECTIONS", "20")
 	t.Setenv("RUN_MIGRATIONS", "true")
+	t.Setenv("SWAGGER_ENABLED", "true")
 	t.Setenv("APP_ENV", "development")
 	t.Setenv("HTTP_ADDRESS", ":9090")
 	t.Setenv("SHUTDOWN_TIMEOUT", "10s")

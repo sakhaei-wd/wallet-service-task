@@ -1,284 +1,1189 @@
 openapi: 3.1.0
 info:
   title: Wallet Service API
-  version: 1.1.0
-  description: Atomic, owner-scoped, and idempotent wallet operations.
+  version: 1.2.0
+  summary: Atomic, owner-scoped wallet operations
+  description: |
+    REST API for creating single-currency wallets and performing deposits,
+    withdrawals, transfers, and transaction-history queries.
+
+    Financial mutations are atomic and idempotent. Amounts are decimal strings,
+    never JSON numbers. `X-User-ID` represents a trusted upstream principal in
+    this assignment; a public deployment must derive it from verified credentials.
+
+    Only successfully committed financial operations appear in history. Rejected
+    requests do not create financial transactions or ledger entries.
+  contact:
+    name: Wallet Service Team
+  license:
+    name: Proprietary
 servers:
   - url: http://localhost:8080
+    description: Local development
+tags:
+  - name: Health
+    description: Process and dependency health checks.
+  - name: Wallets
+    description: Wallet creation and balance retrieval.
+  - name: Operations
+    description: Idempotent financial mutations.
+  - name: Transactions
+    description: Financial transaction details and wallet history.
+  - name: Documentation
+    description: Development-only OpenAPI and Swagger UI endpoints.
 paths:
   /health/live:
     get:
+      tags: [Health]
+      summary: Check process liveness
+      description: Returns success when the HTTP process is running. It does not check PostgreSQL.
       operationId: liveness
       responses:
-        "200": { description: Process is alive }
+        "200":
+          $ref: "#/components/responses/HealthOK"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
   /health/ready:
     get:
+      tags: [Health]
+      summary: Check service readiness
+      description: Pings PostgreSQL and returns 503 while the dependency is unavailable.
       operationId: readiness
       responses:
-        "200": { description: Service is ready }
-        "503": { $ref: "#/components/responses/Problem" }
+        "200":
+          $ref: "#/components/responses/HealthOK"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
   /v1/wallets:
     post:
+      tags: [Wallets]
+      summary: Create a wallet
+      description: |
+        Creates a zero-balance wallet owned by the asserted user. An owner can
+        have at most one wallet. Replaying the same idempotency key and request
+        returns the original wallet with status 200.
       operationId: createWallet
       parameters:
-        - $ref: "#/components/parameters/IdempotencyKey"
         - $ref: "#/components/parameters/UserID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/RequestID"
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              additionalProperties: false
-              required: [currency]
-              properties:
-                currency: { $ref: "#/components/schemas/Currency" }
+              $ref: "#/components/schemas/CreateWalletRequest"
+            examples:
+              usdWallet:
+                summary: Create a USD wallet
+                value:
+                  currency: USD
       responses:
         "201":
-          description: Wallet created
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Wallet" }
+          $ref: "#/components/responses/WalletCreated"
         "200":
-          description: Idempotent replay
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Wallet" }
-        "400": { $ref: "#/components/responses/Problem" }
-        "409": { $ref: "#/components/responses/Problem" }
-        "422": { $ref: "#/components/responses/Problem" }
+          $ref: "#/components/responses/WalletReplay"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
   /v1/wallets/{walletId}:
     parameters:
       - $ref: "#/components/parameters/WalletID"
       - $ref: "#/components/parameters/UserID"
+      - $ref: "#/components/parameters/RequestID"
     get:
+      tags: [Wallets]
+      summary: Get a wallet
+      description: Returns the wallet and current materialized balance to its owner.
       operationId: getWallet
       responses:
         "200":
-          description: Wallet
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Wallet" }
-        "400": { $ref: "#/components/responses/Problem" }
-        "403": { $ref: "#/components/responses/Problem" }
-        "404": { $ref: "#/components/responses/Problem" }
+          $ref: "#/components/responses/WalletOK"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
   /v1/wallets/{walletId}/deposits:
     parameters:
       - $ref: "#/components/parameters/WalletID"
       - $ref: "#/components/parameters/UserID"
+      - $ref: "#/components/parameters/RequestID"
     post:
+      tags: [Operations]
+      summary: Deposit funds
+      description: Atomically credits the owner's wallet and appends a transaction and ledger entry.
       operationId: deposit
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
-      requestBody: { $ref: "#/components/requestBodies/Money" }
+      requestBody:
+        $ref: "#/components/requestBodies/Money"
       responses:
-        "201": { $ref: "#/components/responses/OperationCreated" }
-        "200": { $ref: "#/components/responses/Operation" }
-        "400": { $ref: "#/components/responses/Problem" }
-        "403": { $ref: "#/components/responses/Problem" }
-        "404": { $ref: "#/components/responses/Problem" }
-        "409": { $ref: "#/components/responses/Problem" }
-        "422": { $ref: "#/components/responses/Problem" }
+        "201":
+          $ref: "#/components/responses/OperationCreated"
+        "200":
+          $ref: "#/components/responses/OperationReplay"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
   /v1/wallets/{walletId}/withdrawals:
     parameters:
       - $ref: "#/components/parameters/WalletID"
       - $ref: "#/components/parameters/UserID"
+      - $ref: "#/components/parameters/RequestID"
     post:
+      tags: [Operations]
+      summary: Withdraw funds
+      description: |
+        Atomically debits the owner's wallet and appends history. The operation
+        fails without changing state when the available balance is insufficient.
       operationId: withdraw
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
-      requestBody: { $ref: "#/components/requestBodies/Money" }
+      requestBody:
+        $ref: "#/components/requestBodies/Money"
       responses:
-        "201": { $ref: "#/components/responses/OperationCreated" }
-        "200": { $ref: "#/components/responses/Operation" }
-        "400": { $ref: "#/components/responses/Problem" }
-        "403": { $ref: "#/components/responses/Problem" }
-        "404": { $ref: "#/components/responses/Problem" }
-        "409": { $ref: "#/components/responses/Problem" }
-        "422": { $ref: "#/components/responses/Problem" }
-  /v1/wallets/{walletId}/transactions:
-    parameters:
-      - $ref: "#/components/parameters/WalletID"
-      - $ref: "#/components/parameters/UserID"
-    get:
-      operationId: listWalletTransactions
-      parameters:
-        - name: cursor
-          in: query
-          schema: { type: string }
-        - name: limit
-          in: query
-          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
-        - name: type
-          in: query
-          schema: { $ref: "#/components/schemas/TransactionType" }
-      responses:
+        "201":
+          $ref: "#/components/responses/OperationCreated"
         "200":
-          description: Transaction history
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [items]
-                properties:
-                  items:
-                    type: array
-                    items: { $ref: "#/components/schemas/HistoryItem" }
-                  nextCursor: { type: string }
-        "400": { $ref: "#/components/responses/Problem" }
-        "403": { $ref: "#/components/responses/Problem" }
-        "404": { $ref: "#/components/responses/Problem" }
+          $ref: "#/components/responses/OperationReplay"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
   /v1/transfers:
     post:
+      tags: [Operations]
+      summary: Transfer funds between wallets
+      description: |
+        Atomically debits the caller-owned source wallet and credits the
+        destination wallet. Both wallets must use the request currency. Wallets
+        are locked in stable UUID order to avoid opposing-transfer deadlocks.
       operationId: transfer
       parameters:
-        - $ref: "#/components/parameters/IdempotencyKey"
         - $ref: "#/components/parameters/UserID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/RequestID"
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              additionalProperties: false
-              required: [sourceWalletId, destinationWalletId, amount, currency]
-              properties:
-                sourceWalletId: { type: string, format: uuid }
-                destinationWalletId: { type: string, format: uuid }
-                amount: { $ref: "#/components/schemas/Amount" }
-                currency: { $ref: "#/components/schemas/Currency" }
+              $ref: "#/components/schemas/TransferRequest"
+            examples:
+              transferUSD:
+                summary: Transfer USD between different wallets
+                value:
+                  sourceWalletId: 11111111-1111-4111-8111-111111111111
+                  destinationWalletId: 22222222-2222-4222-8222-222222222222
+                  amount: "25.00"
+                  currency: USD
       responses:
-        "201": { $ref: "#/components/responses/OperationCreated" }
-        "200": { $ref: "#/components/responses/Operation" }
-        "400": { $ref: "#/components/responses/Problem" }
-        "403": { $ref: "#/components/responses/Problem" }
-        "404": { $ref: "#/components/responses/Problem" }
-        "409": { $ref: "#/components/responses/Problem" }
-        "422": { $ref: "#/components/responses/Problem" }
-  /v1/transactions/{transactionId}:
+        "201":
+          $ref: "#/components/responses/OperationCreated"
+        "200":
+          $ref: "#/components/responses/OperationReplay"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+  /v1/wallets/{walletId}/transactions:
+    parameters:
+      - $ref: "#/components/parameters/WalletID"
+      - $ref: "#/components/parameters/UserID"
+      - $ref: "#/components/parameters/RequestID"
     get:
-      operationId: getTransaction
+      tags: [Transactions]
+      summary: List wallet transaction history
+      description: |
+        Returns committed ledger effects newest first. The opaque cursor selects
+        records older than the previous page and must be used without modification.
+      operationId: listWalletTransactions
       parameters:
-        - name: transactionId
-          in: path
-          required: true
-          schema: { type: string, format: uuid }
-        - $ref: "#/components/parameters/UserID"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/TransactionTypeFilter"
       responses:
-        "200": { $ref: "#/components/responses/Operation" }
-        "400": { $ref: "#/components/responses/Problem" }
-        "403": { $ref: "#/components/responses/Problem" }
-        "404": { $ref: "#/components/responses/Problem" }
+        "200":
+          $ref: "#/components/responses/HistoryOK"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+  /v1/transactions/{transactionId}:
+    parameters:
+      - $ref: "#/components/parameters/TransactionID"
+      - $ref: "#/components/parameters/UserID"
+      - $ref: "#/components/parameters/RequestID"
+    get:
+      tags: [Transactions]
+      summary: Get a financial transaction
+      description: Returns a committed operation to an owner of a participating wallet.
+      operationId: getTransaction
+      responses:
+        "200":
+          $ref: "#/components/responses/OperationOK"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+  /openapi.yaml:
+    get:
+      tags: [Documentation]
+      summary: Download the OpenAPI source document
+      description: Available only when Swagger documentation is enabled.
+      operationId: getOpenAPISource
+      x-development-only: true
+      responses:
+        "200":
+          description: OpenAPI 3.1 YAML source.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestID"
+          content:
+            application/yaml:
+              schema:
+                type: string
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+  /openapi.json:
+    get:
+      tags: [Documentation]
+      summary: Download the generated OpenAPI document
+      description: Generated from openapi.yaml and available only when Swagger documentation is enabled.
+      operationId: getOpenAPIGenerated
+      x-development-only: true
+      responses:
+        "200":
+          description: Generated OpenAPI 3.1 JSON document.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestID"
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+  /docs:
+    get:
+      tags: [Documentation]
+      summary: Redirect to Swagger UI
+      description: Redirects to the canonical trailing-slash Swagger UI URL when documentation is enabled.
+      operationId: redirectToSwaggerUI
+      x-development-only: true
+      responses:
+        "307":
+          description: Temporary redirect to `/docs/`.
+          headers:
+            Location:
+              description: Canonical Swagger UI path.
+              schema:
+                type: string
+                const: /docs/
+              example: /docs/
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+  /docs/:
+    get:
+      tags: [Documentation]
+      summary: Open Swagger UI
+      description: Interactive Swagger UI, available only when Swagger documentation is enabled.
+      operationId: swaggerUI
+      x-development-only: true
+      responses:
+        "200":
+          description: Swagger UI HTML and embedded assets.
+          content:
+            text/html:
+              schema:
+                type: string
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
 components:
   parameters:
     WalletID:
       name: walletId
       in: path
       required: true
-      schema: { type: string, format: uuid }
-    IdempotencyKey:
-      name: Idempotency-Key
-      in: header
+      description: Wallet UUID.
+      schema:
+        type: string
+        format: uuid
+      example: 11111111-1111-4111-8111-111111111111
+    TransactionID:
+      name: transactionId
+      in: path
       required: true
-      schema: { type: string, minLength: 1, maxLength: 128 }
+      description: Financial transaction UUID.
+      schema:
+        type: string
+        format: uuid
+      example: 33333333-3333-4333-8333-333333333333
     UserID:
       name: X-User-ID
       in: header
       required: true
-      description: Trusted upstream user principal for this assignment; production deployments derive it from verified authentication credentials.
-      schema: { type: string, format: uuid }
+      description: |
+        UUID asserted by a trusted upstream identity component. It determines
+        wallet ownership and the idempotency namespace. It is not a substitute
+        for authentication on an untrusted public deployment.
+      schema:
+        type: string
+        format: uuid
+      example: 44444444-4444-4444-8444-444444444444
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: |
+        Nonblank caller-generated key. The same owner, key, and normalized
+        request replay the original result. Reusing the key with another request
+        returns 409. Maximum length is 128 characters.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+        pattern: ".*\\S.*"
+      example: transfer-20260720-001
+    RequestID:
+      name: X-Request-ID
+      in: header
+      required: false
+      description: Optional correlation ID. Values longer than 128 characters are replaced.
+      schema:
+        type: string
+        maxLength: 128
+      example: client-request-123
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      description: Opaque URL-safe continuation token returned in nextCursor.
+      schema:
+        type: string
+        pattern: "^[A-Za-z0-9_-]+$"
+      example: NDI
+    Limit:
+      name: limit
+      in: query
+      required: false
+      description: Maximum number of history entries to return.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 50
+      example: 25
+    TransactionTypeFilter:
+      name: type
+      in: query
+      required: false
+      description: Case-insensitive transaction type filter.
+      schema:
+        $ref: "#/components/schemas/TransactionType"
+      example: TRANSFER
+  headers:
+    RequestID:
+      description: Correlation ID assigned to the request.
+      schema:
+        type: string
+        maxLength: 128
+      example: b618a705-2928-4f41-ab1f-c2fd95622887
+    Location:
+      description: Relative URL of the created resource.
+      schema:
+        type: string
+      example: /v1/transactions/33333333-3333-4333-8333-333333333333
+    Allow:
+      description: HTTP method supported by this resource.
+      schema:
+        type: string
+      example: POST
   requestBodies:
     Money:
       required: true
+      description: Exact positive monetary amount in the wallet currency.
       content:
         application/json:
           schema:
-            type: object
-            additionalProperties: false
-            required: [amount, currency]
-            properties:
-              amount: { $ref: "#/components/schemas/Amount" }
-              currency: { $ref: "#/components/schemas/Currency" }
+            $ref: "#/components/schemas/MoneyRequest"
+          examples:
+            decimalCurrency:
+              summary: Deposit or withdraw USD
+              value:
+                amount: "100.00"
+                currency: USD
+            zeroExponentCurrency:
+              summary: Deposit or withdraw JPY
+              value:
+                amount: "5000"
+                currency: JPY
   responses:
+    HealthOK:
+      description: Health check passed.
+      headers:
+        X-Request-ID:
+          $ref: "#/components/headers/RequestID"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Health"
+          example:
+            status: ok
+    WalletCreated:
+      description: Wallet created with a zero balance.
+      headers:
+        Location:
+          $ref: "#/components/headers/Location"
+        X-Request-ID:
+          $ref: "#/components/headers/RequestID"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Wallet"
+          example:
+            id: 11111111-1111-4111-8111-111111111111
+            ownerId: 44444444-4444-4444-8444-444444444444
+            currency: USD
+            balance: "0.00"
+            status: ACTIVE
+            version: 1
+            createdAt: "2026-07-20T10:00:00Z"
+            updatedAt: "2026-07-20T10:00:00Z"
+    WalletReplay:
+      description: Idempotent replay returning the previously created wallet.
+      headers:
+        Location:
+          $ref: "#/components/headers/Location"
+        X-Request-ID:
+          $ref: "#/components/headers/RequestID"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Wallet"
+          example:
+            id: 11111111-1111-4111-8111-111111111111
+            ownerId: 44444444-4444-4444-8444-444444444444
+            currency: USD
+            balance: "0.00"
+            status: ACTIVE
+            version: 1
+            createdAt: "2026-07-20T10:00:00Z"
+            updatedAt: "2026-07-20T10:00:00Z"
+    WalletOK:
+      description: Current wallet state.
+      headers:
+        X-Request-ID:
+          $ref: "#/components/headers/RequestID"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Wallet"
+          example:
+            id: 11111111-1111-4111-8111-111111111111
+            ownerId: 44444444-4444-4444-8444-444444444444
+            currency: USD
+            balance: "125.00"
+            status: ACTIVE
+            version: 3
+            createdAt: "2026-07-20T10:00:00Z"
+            updatedAt: "2026-07-20T10:05:00Z"
     OperationCreated:
-      description: Operation committed
+      description: Financial operation committed atomically.
+      headers:
+        Location:
+          $ref: "#/components/headers/Location"
+        X-Request-ID:
+          $ref: "#/components/headers/RequestID"
       content:
         application/json:
-          schema: { $ref: "#/components/schemas/Operation" }
-    Operation:
-      description: Financial operation
+          schema:
+            $ref: "#/components/schemas/Operation"
+          examples:
+            deposit:
+              $ref: "#/components/examples/DepositOperation"
+            withdrawal:
+              $ref: "#/components/examples/WithdrawalOperation"
+            transfer:
+              $ref: "#/components/examples/TransferOperation"
+    OperationReplay:
+      description: Idempotent replay returning the previously committed operation.
+      headers:
+        Location:
+          $ref: "#/components/headers/Location"
+        X-Request-ID:
+          $ref: "#/components/headers/RequestID"
       content:
         application/json:
-          schema: { $ref: "#/components/schemas/Operation" }
-    Problem:
-      description: Structured error
+          schema:
+            $ref: "#/components/schemas/Operation"
+          examples:
+            deposit:
+              $ref: "#/components/examples/DepositOperation"
+            withdrawal:
+              $ref: "#/components/examples/WithdrawalOperation"
+            transfer:
+              $ref: "#/components/examples/TransferOperation"
+    OperationOK:
+      description: Committed financial operation.
+      headers:
+        X-Request-ID:
+          $ref: "#/components/headers/RequestID"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Operation"
+          examples:
+            transfer:
+              $ref: "#/components/examples/TransferOperation"
+    HistoryOK:
+      description: Page of wallet transaction history.
+      headers:
+        X-Request-ID:
+          $ref: "#/components/headers/RequestID"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/HistoryPage"
+          example:
+            items:
+              - id: 33333333-3333-4333-8333-333333333333
+                type: TRANSFER
+                direction: DEBIT
+                amount: "25.00"
+                currency: USD
+                balanceAfter: "75.00"
+                counterpartyWalletId: 22222222-2222-4222-8222-222222222222
+                createdAt: "2026-07-20T10:05:00Z"
+            nextCursor: NDE
+    BadRequest:
+      $ref: "#/components/responses/Problem400"
+    Forbidden:
+      $ref: "#/components/responses/Problem403"
+    NotFound:
+      $ref: "#/components/responses/Problem404"
+    Conflict:
+      $ref: "#/components/responses/Problem409"
+    PayloadTooLarge:
+      $ref: "#/components/responses/Problem413"
+    UnsupportedMediaType:
+      $ref: "#/components/responses/Problem415"
+    UnprocessableEntity:
+      $ref: "#/components/responses/Problem422"
+    InternalServerError:
+      $ref: "#/components/responses/Problem500"
+    ServiceUnavailable:
+      $ref: "#/components/responses/Problem503"
+    MethodNotAllowed:
+      description: The resource does not support the requested HTTP method.
+      headers:
+        Allow:
+          $ref: "#/components/headers/Allow"
+        X-Request-ID:
+          $ref: "#/components/headers/RequestID"
       content:
         application/problem+json:
-          schema: { $ref: "#/components/schemas/Problem" }
+          schema:
+            $ref: "#/components/schemas/Problem"
+          example:
+            type: https://wallet.example/problems/METHOD_NOT_ALLOWED
+            title: Method not allowed
+            status: 405
+            code: METHOD_NOT_ALLOWED
+            detail: This resource does not support the requested HTTP method.
+            instance: /v1/wallets
+            requestId: b618a705-2928-4f41-ab1f-c2fd95622887
+    Problem400:
+      description: The request is syntactically invalid or fails transport-level validation.
+      headers:
+        X-Request-ID:
+          $ref: "#/components/headers/RequestID"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+          examples:
+            invalidUUID:
+              value:
+                type: https://wallet.example/problems/INVALID_REQUEST
+                title: Invalid request
+                status: 400
+                code: INVALID_REQUEST
+                detail: walletId must be a valid UUID
+                instance: /v1/wallets/not-a-uuid
+                requestId: b618a705-2928-4f41-ab1f-c2fd95622887
+            missingUser:
+              value:
+                type: https://wallet.example/problems/INVALID_REQUEST
+                title: Invalid request
+                status: 400
+                code: INVALID_REQUEST
+                detail: X-User-ID header is required and must be a valid UUID
+                instance: /v1/wallets/11111111-1111-4111-8111-111111111111
+                requestId: b618a705-2928-4f41-ab1f-c2fd95622887
+    Problem403:
+      description: The asserted user cannot access the wallet or transaction.
+      headers:
+        X-Request-ID:
+          $ref: "#/components/headers/RequestID"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+          example:
+            type: https://wallet.example/problems/WALLET_ACCESS_DENIED
+            title: Wallet access denied
+            status: 403
+            code: WALLET_ACCESS_DENIED
+            detail: wallet access denied
+            instance: /v1/wallets/11111111-1111-4111-8111-111111111111
+            requestId: b618a705-2928-4f41-ab1f-c2fd95622887
+    Problem404:
+      description: The requested wallet, transaction, or route does not exist.
+      headers:
+        X-Request-ID:
+          $ref: "#/components/headers/RequestID"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+          example:
+            type: https://wallet.example/problems/RESOURCE_NOT_FOUND
+            title: Resource not found
+            status: 404
+            code: RESOURCE_NOT_FOUND
+            detail: wallet not found
+            instance: /v1/wallets/11111111-1111-4111-8111-111111111111
+            requestId: b618a705-2928-4f41-ab1f-c2fd95622887
+    Problem409:
+      description: Wallet state, ownership uniqueness, or idempotency conflict.
+      headers:
+        X-Request-ID:
+          $ref: "#/components/headers/RequestID"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+          examples:
+            ownerAlreadyHasWallet:
+              value:
+                type: https://wallet.example/problems/OWNER_ALREADY_HAS_WALLET
+                title: Wallet already exists
+                status: 409
+                code: OWNER_ALREADY_HAS_WALLET
+                detail: owner already has a wallet
+                instance: /v1/wallets
+                requestId: b618a705-2928-4f41-ab1f-c2fd95622887
+            idempotencyConflict:
+              value:
+                type: https://wallet.example/problems/IDEMPOTENCY_CONFLICT
+                title: Idempotency conflict
+                status: 409
+                code: IDEMPOTENCY_CONFLICT
+                detail: idempotency key was used with a different request
+                instance: /v1/transfers
+                requestId: b618a705-2928-4f41-ab1f-c2fd95622887
+    Problem413:
+      description: Request body exceeds 1 MiB.
+      headers:
+        X-Request-ID:
+          $ref: "#/components/headers/RequestID"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+          example:
+            type: https://wallet.example/problems/REQUEST_TOO_LARGE
+            title: Request too large
+            status: 413
+            code: REQUEST_TOO_LARGE
+            detail: The request body must not exceed 1 MiB.
+            instance: /v1/transfers
+            requestId: b618a705-2928-4f41-ab1f-c2fd95622887
+    Problem415:
+      description: Content-Type is not application/json.
+      headers:
+        X-Request-ID:
+          $ref: "#/components/headers/RequestID"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+          example:
+            type: https://wallet.example/problems/UNSUPPORTED_MEDIA_TYPE
+            title: Unsupported media type
+            status: 415
+            code: UNSUPPORTED_MEDIA_TYPE
+            detail: Content-Type must be application/json
+            instance: /v1/transfers
+            requestId: b618a705-2928-4f41-ab1f-c2fd95622887
+    Problem422:
+      description: The request violates a financial-domain validation rule.
+      headers:
+        X-Request-ID:
+          $ref: "#/components/headers/RequestID"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+          examples:
+            invalidAmount:
+              value:
+                type: https://wallet.example/problems/INVALID_AMOUNT
+                title: Invalid amount
+                status: 422
+                code: INVALID_AMOUNT
+                detail: amount must be greater than zero
+                instance: /v1/wallets/11111111-1111-4111-8111-111111111111/deposits
+                requestId: b618a705-2928-4f41-ab1f-c2fd95622887
+            insufficientFunds:
+              value:
+                type: https://wallet.example/problems/INSUFFICIENT_FUNDS
+                title: Insufficient funds
+                status: 422
+                code: INSUFFICIENT_FUNDS
+                detail: wallet has insufficient funds
+                instance: /v1/wallets/11111111-1111-4111-8111-111111111111/withdrawals
+                requestId: b618a705-2928-4f41-ab1f-c2fd95622887
+            sameWalletTransfer:
+              value:
+                type: https://wallet.example/problems/SAME_WALLET_TRANSFER
+                title: Invalid transfer
+                status: 422
+                code: SAME_WALLET_TRANSFER
+                detail: source and destination wallets must differ
+                instance: /v1/transfers
+                requestId: b618a705-2928-4f41-ab1f-c2fd95622887
+    Problem500:
+      description: Unexpected internal error. Details are intentionally not exposed.
+      headers:
+        X-Request-ID:
+          $ref: "#/components/headers/RequestID"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+          example:
+            type: https://wallet.example/problems/INTERNAL_ERROR
+            title: Internal server error
+            status: 500
+            code: INTERNAL_ERROR
+            detail: The request could not be completed.
+            instance: /v1/transfers
+            requestId: b618a705-2928-4f41-ab1f-c2fd95622887
+    Problem503:
+      description: Dependency unavailable or request cancelled/exceeded its deadline.
+      headers:
+        X-Request-ID:
+          $ref: "#/components/headers/RequestID"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+          examples:
+            notReady:
+              value:
+                type: https://wallet.example/problems/NOT_READY
+                title: Service unavailable
+                status: 503
+                code: NOT_READY
+                detail: The database is unavailable.
+                instance: /health/ready
+                requestId: b618a705-2928-4f41-ab1f-c2fd95622887
+            requestCancelled:
+              value:
+                type: https://wallet.example/problems/REQUEST_CANCELLED
+                title: Request could not be completed
+                status: 503
+                code: REQUEST_CANCELLED
+                detail: The request was cancelled or exceeded its deadline.
+                instance: /v1/transfers
+                requestId: b618a705-2928-4f41-ab1f-c2fd95622887
   schemas:
-    Amount:
+    Health:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          type: string
+          const: ok
+    CreateWalletRequest:
+      type: object
+      additionalProperties: false
+      required: [currency]
+      properties:
+        currency:
+          $ref: "#/components/schemas/Currency"
+    MoneyRequest:
+      description: |
+        Positive exact amount. USD, EUR, and GBP support up to two fractional
+        digits. JPY accepts whole units only. The value must fit signed 64-bit
+        minor-unit storage.
+      oneOf:
+        - $ref: "#/components/schemas/DecimalMoneyRequest"
+        - $ref: "#/components/schemas/IntegerMoneyRequest"
+    DecimalMoneyRequest:
+      type: object
+      title: Two-decimal currency amount
+      additionalProperties: false
+      required: [amount, currency]
+      properties:
+        amount:
+          $ref: "#/components/schemas/PositiveDecimalAmount"
+        currency:
+          type: string
+          enum: [USD, EUR, GBP]
+    IntegerMoneyRequest:
+      type: object
+      title: Zero-decimal currency amount
+      additionalProperties: false
+      required: [amount, currency]
+      properties:
+        amount:
+          $ref: "#/components/schemas/PositiveIntegerAmount"
+        currency:
+          type: string
+          const: JPY
+    TransferRequest:
+      description: Transfer command. Source and destination UUIDs must differ.
+      oneOf:
+        - $ref: "#/components/schemas/DecimalTransferRequest"
+        - $ref: "#/components/schemas/IntegerTransferRequest"
+    DecimalTransferRequest:
+      type: object
+      title: Transfer in a two-decimal currency
+      additionalProperties: false
+      required: [sourceWalletId, destinationWalletId, amount, currency]
+      properties:
+        sourceWalletId:
+          type: string
+          format: uuid
+        destinationWalletId:
+          type: string
+          format: uuid
+        amount:
+          $ref: "#/components/schemas/PositiveDecimalAmount"
+        currency:
+          type: string
+          enum: [USD, EUR, GBP]
+    IntegerTransferRequest:
+      type: object
+      title: Transfer in a zero-decimal currency
+      additionalProperties: false
+      required: [sourceWalletId, destinationWalletId, amount, currency]
+      properties:
+        sourceWalletId:
+          type: string
+          format: uuid
+        destinationWalletId:
+          type: string
+          format: uuid
+        amount:
+          $ref: "#/components/schemas/PositiveIntegerAmount"
+        currency:
+          type: string
+          const: JPY
+    PositiveDecimalAmount:
       type: string
-      pattern: "^[0-9]+(\\.[0-9]+)?$"
-      examples: ["25.50"]
+      minLength: 1
+      maxLength: 20
+      pattern: "^(?:0*[1-9][0-9]*(?:\\.[0-9]{1,2})?|0+\\.(?:[0-9]?[1-9]|[1-9]0))$"
+      description: Positive decimal string with at most two fractional digits.
+      examples: ["0.01", "25.50", "100"]
+    PositiveIntegerAmount:
+      type: string
+      minLength: 1
+      maxLength: 19
+      pattern: "^0*[1-9][0-9]*$"
+      description: Positive whole-unit decimal string.
+      examples: ["1", "5000"]
     Currency:
       type: string
+      description: ISO-style currency code supported by this service.
       enum: [USD, EUR, GBP, JPY]
+      example: USD
     TransactionType:
       type: string
       enum: [DEPOSIT, WITHDRAWAL, TRANSFER]
+    EntryDirection:
+      type: string
+      enum: [DEBIT, CREDIT]
+    WalletStatus:
+      type: string
+      enum: [ACTIVE, FROZEN, CLOSED]
+    MoneyValue:
+      type: string
+      pattern: "^[0-9]+(?:\\.[0-9]{2})?$"
+      description: Formatted nonnegative amount; JPY has no fractional part.
+      example: "125.00"
     Wallet:
       type: object
+      additionalProperties: false
       required: [id, ownerId, currency, balance, status, version, createdAt, updatedAt]
       properties:
-        id: { type: string, format: uuid }
-        ownerId: { type: string, format: uuid }
-        currency: { $ref: "#/components/schemas/Currency" }
-        balance: { type: string }
-        status: { type: string, enum: [ACTIVE, FROZEN, CLOSED] }
-        version: { type: integer }
-        createdAt: { type: string, format: date-time }
-        updatedAt: { type: string, format: date-time }
+        id:
+          type: string
+          format: uuid
+        ownerId:
+          type: string
+          format: uuid
+        currency:
+          $ref: "#/components/schemas/Currency"
+        balance:
+          $ref: "#/components/schemas/MoneyValue"
+        status:
+          $ref: "#/components/schemas/WalletStatus"
+        version:
+          type: integer
+          format: int64
+          minimum: 1
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
     LedgerEffect:
       type: object
+      additionalProperties: false
       required: [walletId, direction, balanceAfter]
       properties:
-        walletId: { type: string, format: uuid }
-        direction: { type: string, enum: [DEBIT, CREDIT] }
-        balanceAfter: { type: string }
+        walletId:
+          type: string
+          format: uuid
+        direction:
+          $ref: "#/components/schemas/EntryDirection"
+        balanceAfter:
+          $ref: "#/components/schemas/MoneyValue"
     Operation:
       type: object
+      additionalProperties: false
       required: [id, type, amount, currency, entries, createdAt]
       properties:
-        id: { type: string, format: uuid }
-        type: { $ref: "#/components/schemas/TransactionType" }
-        amount: { type: string }
-        currency: { $ref: "#/components/schemas/Currency" }
-        sourceWalletId: { type: string, format: uuid }
-        destinationWalletId: { type: string, format: uuid }
+        id:
+          type: string
+          format: uuid
+        type:
+          $ref: "#/components/schemas/TransactionType"
+        amount:
+          $ref: "#/components/schemas/MoneyValue"
+        currency:
+          $ref: "#/components/schemas/Currency"
+        sourceWalletId:
+          type: string
+          format: uuid
+        destinationWalletId:
+          type: string
+          format: uuid
         entries:
           type: array
-          items: { $ref: "#/components/schemas/LedgerEffect" }
-        createdAt: { type: string, format: date-time }
+          minItems: 1
+          maxItems: 2
+          items:
+            $ref: "#/components/schemas/LedgerEffect"
+        createdAt:
+          type: string
+          format: date-time
     HistoryItem:
       type: object
+      additionalProperties: false
       required: [id, type, direction, amount, currency, balanceAfter, createdAt]
       properties:
-        id: { type: string, format: uuid }
-        type: { $ref: "#/components/schemas/TransactionType" }
-        direction: { type: string, enum: [DEBIT, CREDIT] }
-        amount: { type: string }
-        currency: { $ref: "#/components/schemas/Currency" }
-        balanceAfter: { type: string }
-        counterpartyWalletId: { type: string, format: uuid }
-        createdAt: { type: string, format: date-time }
+        id:
+          type: string
+          format: uuid
+        type:
+          $ref: "#/components/schemas/TransactionType"
+        direction:
+          $ref: "#/components/schemas/EntryDirection"
+        amount:
+          $ref: "#/components/schemas/MoneyValue"
+        currency:
+          $ref: "#/components/schemas/Currency"
+        balanceAfter:
+          $ref: "#/components/schemas/MoneyValue"
+        counterpartyWalletId:
+          type: string
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+    HistoryPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items:
+            $ref: "#/components/schemas/HistoryItem"
+        nextCursor:
+          type: string
+          pattern: "^[A-Za-z0-9_-]+$"
     Problem:
       type: object
+      additionalProperties: false
       required: [type, title, status, code, detail, instance]
       properties:
-        type: { type: string, format: uri }
-        title: { type: string }
-        status: { type: integer }
-        code: { type: string }
-        detail: { type: string }
-        instance: { type: string }
-        requestId: { type: string }
+        type:
+          type: string
+          format: uri
+        title:
+          type: string
+        status:
+          type: integer
+          minimum: 400
+          maximum: 599
+        code:
+          type: string
+          pattern: "^[A-Z][A-Z0-9_]*$"
+        detail:
+          type: string
+        instance:
+          type: string
+        requestId:
+          type: string
+          maxLength: 128
+  examples:
+    DepositOperation:
+      summary: Successful deposit
+      value:
+        id: 33333333-3333-4333-8333-333333333333
+        type: DEPOSIT
+        amount: "100.00"
+        currency: USD
+        destinationWalletId: 11111111-1111-4111-8111-111111111111
+        entries:
+          - walletId: 11111111-1111-4111-8111-111111111111
+            direction: CREDIT
+            balanceAfter: "100.00"
+        createdAt: "2026-07-20T10:05:00Z"
+    WithdrawalOperation:
+      summary: Successful withdrawal
+      value:
+        id: 33333333-3333-4333-8333-333333333333
+        type: WITHDRAWAL
+        amount: "25.00"
+        currency: USD
+        sourceWalletId: 11111111-1111-4111-8111-111111111111
+        entries:
+          - walletId: 11111111-1111-4111-8111-111111111111
+            direction: DEBIT
+            balanceAfter: "75.00"
+        createdAt: "2026-07-20T10:10:00Z"
+    TransferOperation:
+      summary: Successful transfer
+      value:
+        id: 33333333-3333-4333-8333-333333333333
+        type: TRANSFER
+        amount: "25.00"
+        currency: USD
+        sourceWalletId: 11111111-1111-4111-8111-111111111111
+        destinationWalletId: 22222222-2222-4222-8222-222222222222
+        entries:
+          - walletId: 11111111-1111-4111-8111-111111111111
+            direction: DEBIT
+            balanceAfter: "75.00"
+          - walletId: 22222222-2222-4222-8222-222222222222
+            direction: CREDIT
+            balanceAfter: "50.00"
+        createdAt: "2026-07-20T10:15:00Z"

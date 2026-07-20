@@ -37,7 +37,7 @@ Core guarantees:
 | Database | PostgreSQL 14+; PostgreSQL 17 in Docker Compose |
 | Database driver | `pgx/v5` and `pgxpool` |
 | Persistence | Explicit SQL without an ORM |
-| API specification | OpenAPI 3.1 |
+| API documentation | OpenAPI 3.1, `kin-openapi` validation, and embedded Swagger UI |
 | Logging | Standard library `log/slog` with JSON output |
 | Testing | Go `testing`, table-driven tests, transactional fakes, real PostgreSQL integration tests, race detector |
 | Local infrastructure | Docker and Docker Compose |
@@ -101,8 +101,12 @@ See [docs/architecture.md](docs/architecture.md) for detailed transaction flows,
 ```text
 .
 ├── api/
-│   └── openapi.yaml                    OpenAPI 3.1 contract
+│   ├── docs.go                         Embedded contract and Swagger UI
+│   ├── openapi.yaml                    Authored OpenAPI 3.1 source of truth
+│   ├── openapi.json                    Generated Swagger UI input
+│   └── openapi_test.go                 Contract validation and drift checks
 ├── cmd/
+│   ├── openapi/main.go                 OpenAPI validator and JSON generator
 │   ├── migrate/main.go                 Migration executable
 │   └── server/main.go                  Application composition root
 ├── docs/
@@ -232,6 +236,7 @@ Alternatively, set `RUN_MIGRATIONS=true` for local development and start only th
 | `HTTP_ADDRESS` | `:8080` | HTTP listen address |
 | `DATABASE_MAX_CONNECTIONS` | `20` | Maximum pool connections; minimum is 2 |
 | `RUN_MIGRATIONS` | `false` | Apply embedded migrations during server startup |
+| `SWAGGER_ENABLED` | `true` outside production; `false` in production | Serve the OpenAPI documents and Swagger UI |
 | `REQUEST_TIMEOUT` | `10s` | Per-request context deadline |
 | `SHUTDOWN_TIMEOUT` | `10s` | Graceful shutdown deadline |
 | `HTTP_READ_HEADER_TIMEOUT` | `5s` | Header read timeout |
@@ -269,6 +274,7 @@ The always-on suite includes:
 - Application-service tests backed by a transaction-aware in-memory store
 - Idempotency, cancellation, insufficient-funds, overflow, and rollback tests
 - API success and validation tests
+- OpenAPI semantic validation, route/status coverage, and generated-file drift detection
 - Structured error, middleware, recovery, timeout, and pagination tests
 - PostgreSQL retry-classification tests
 
@@ -311,6 +317,45 @@ Integration coverage includes:
 
 The GitHub Actions workflow provisions PostgreSQL and runs the complete suite with the race detector.
 
+## OpenAPI and Swagger UI
+
+The authored source of truth is [api/openapi.yaml](api/openapi.yaml). It documents every route, request and response schema, validation rule, error shape, status code, and representative example. [api/openapi.json](api/openapi.json) is generated from that source and must not be edited manually.
+
+After changing the HTTP contract, validate it and regenerate the JSON document:
+
+```bash
+make swagger
+```
+
+The equivalent Go command is:
+
+```bash
+go generate ./api
+```
+
+Run the synchronization check independently with:
+
+```bash
+make swagger-check
+```
+
+The regular `go test ./...` suite performs the same semantic validation and fails if `openapi.json` is stale. CI also regenerates the document and rejects an uncommitted difference.
+
+With the service running locally and `SWAGGER_ENABLED=true`, open:
+
+```text
+http://localhost:8080/docs/
+```
+
+The UI assets are embedded in the Go binary and load the same-origin JSON contract, so Swagger UI's **Try it out** feature can call the local API directly. Supply the required `X-User-ID` header and, for mutation endpoints, an `Idempotency-Key` in the generated form.
+
+Raw documents are available at:
+
+- `GET http://localhost:8080/openapi.yaml` — authored YAML
+- `GET http://localhost:8080/openapi.json` — generated JSON used by Swagger UI
+
+Documentation is enabled by default in non-production environments and disabled by default when `APP_ENV=production`. Set `SWAGGER_ENABLED` explicitly to override this behavior. For an internet-facing deployment, keep it disabled or protect it with the same access controls as other operational endpoints.
+
 ## API endpoints
 
 The complete contract is available in [api/openapi.yaml](api/openapi.yaml).
@@ -326,6 +371,10 @@ The complete contract is available in [api/openapi.yaml](api/openapi.yaml).
 | `POST` | `/v1/transfers` | Transfer between wallets | `201` |
 | `GET` | `/v1/transactions/{transactionId}` | Retrieve a financial transaction | `200` |
 | `GET` | `/v1/wallets/{walletId}/transactions` | List wallet history | `200` |
+| `GET` | `/openapi.yaml` | Download the authored OpenAPI document (when enabled) | `200` |
+| `GET` | `/openapi.json` | Download the generated OpenAPI document (when enabled) | `200` |
+| `GET` | `/docs` | Redirect to the canonical Swagger UI URL (when enabled) | `307` |
+| `GET` | `/docs/` | Open embedded Swagger UI (when enabled) | `200` |
 
 ### Request conventions
 
@@ -416,7 +465,7 @@ Common statuses:
 | `400` | Malformed request, invalid UUID, cursor, or query parameter |
 | `403` | The asserted user does not own or participate in the requested resource |
 | `404` | Wallet, transaction, or route not found |
-| `409` | Inactive wallet or idempotency-key conflict |
+| `409` | Owner already has a wallet, inactive wallet, or idempotency-key conflict |
 | `413` | Request body exceeds 1 MiB |
 | `415` | Unsupported media type |
 | `422` | Invalid amount, unsupported/mismatched currency, insufficient funds, or same-wallet transfer |
@@ -473,20 +522,9 @@ History uses ledger sequence cursors instead of offset pagination. Cursor pagina
 
 The repository includes a dedicated migration executable with an advisory lock and version table. Production deployments can migrate once as a release step instead of letting every API replica compete during startup.
 
-## Current limitations
+### OpenAPI-first documentation
 
-- There is no credential authentication or tenant model. `X-User-ID` is an assignment-level trusted-upstream contract and must not be accepted directly from an untrusted public client.
-- Ownership authorization exists, but it is only as trustworthy as the upstream component asserting `X-User-ID`.
-- Currency support is intentionally limited to USD, EUR, GBP, and JPY.
-- Deposits and withdrawals are not integrated with an external payment or settlement provider.
-- Deposits and withdrawals have wallet ledger entries but do not yet post against internal clearing accounts for full double-entry accounting.
-- Wallet status exists in the domain and schema, but there are no administrative freeze, unfreeze, or close endpoints.
-- Idempotency records have no retention or archival policy.
-- There is no asynchronous outbox, notification system, or event broker integration.
-- There is no automated ledger-to-materialized-balance reconciliation job.
-- Metrics, distributed tracing, rate limiting, and alert definitions are not included.
-- The database is not partitioned or sharded, and the service uses one writable PostgreSQL primary.
-- Integration tests require an externally supplied PostgreSQL test database.
+`api/openapi.yaml` is the reviewed API contract. A small Go generator validates it with `kin-openapi` and produces the JSON consumed by the embedded Swagger UI. Contract tests verify every registered public route and expected status, while CI detects generated-file drift. This keeps documentation available without a runtime CDN dependency or reflection-based schema generation.
 
 ## Future improvements
 
@@ -504,7 +542,4 @@ The repository includes a dedicated migration executable with an advisory lock a
 - Partition ledger history after measured volume justifies it.
 - Add account statements, date-range filtering, and export capabilities.
 - Add multi-region and disaster-recovery procedures before introducing database sharding.
-
-## License
-
-This repository is provided as a technical-assignment implementation. Add the license required by the target organization before distribution.
+- Consider spec-driven server/interface generation if the API surface becomes large enough that maintaining Go DTOs and OpenAPI schemas manually creates unacceptable drift risk.
